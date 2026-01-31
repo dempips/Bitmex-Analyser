@@ -234,13 +234,16 @@ export default function Analytics() {
   }, []);
 
   useEffect(() => {
+    if (!pollingEnabled) return;
+
     refreshAll().catch(() => {});
     const id = setInterval(() => {
       refreshAll().catch(() => {});
-    }, 5000);
+    }, Math.max(2, Number(pollIntervalSec || 5)) * 1000);
+
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, depth, bands, flowMinutes, liqMinutes, preset, customStart, customEnd]);
+  }, [pollingEnabled, pollIntervalSec, symbol, depth, bands, flowMinutes, liqMinutes, preset, customStart, customEnd, live.orderbook]);
 
   return (
     <div data-testid="analytics-page" className="space-y-6">
