@@ -516,6 +516,51 @@ async def health():
     return HealthResponse(ok=True)
 
 
+# -------- WebSocket / Live (SSE) --------
+@api_router.get("/live/status", tags=["live"])
+async def live_status():
+    return ws_manager.status()
+
+
+class LiveStartRequest(BaseModel):
+    symbol: str = "XBTUSD"
+
+
+@api_router.post("/live/start", tags=["live"])
+async def live_start(payload: LiveStartRequest):
+    await ws_manager.restart(symbol=payload.symbol)
+    return ws_manager.status()
+
+
+@api_router.post("/live/stop", tags=["live"])
+async def live_stop():
+    await ws_manager.stop()
+    return ws_manager.status()
+
+
+@api_router.post("/live/restart", tags=["live"])
+async def live_restart(payload: LiveStartRequest):
+    await ws_manager.restart(symbol=payload.symbol)
+    return ws_manager.status()
+
+
+@api_router.get("/live/stream", tags=["live"])
+async def live_stream():
+    # Server-Sent Events endpoint.
+    # Frontend can open an EventSource and receive JSON messages.
+    q = await ws_manager.subscribe_client()
+
+    async def event_gen():
+        try:
+            while True:
+                msg = await q.get()
+                yield f"data: {json.dumps(msg)}\n\n"
+        finally:
+            ws_manager.unsubscribe_client(q)
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
 # -------- Auth --------
 @api_router.post("/auth/register", response_model=AuthResponse, tags=["auth"])
 async def register(payload: RegisterRequest):
