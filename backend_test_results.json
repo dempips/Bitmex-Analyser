@@ -1,77 +1,77 @@
 {
   "summary": {
     "total_tests": 11,
-    "passed_tests": 10,
-    "failed_tests": 1,
-    "success_rate": 90.9090909090909,
-    "timestamp": "2026-01-31T06:35:57.750364"
+    "passed_tests": 11,
+    "failed_tests": 0,
+    "success_rate": 100.0,
+    "timestamp": "2026-01-31T06:36:55.473395"
   },
   "detailed_results": [
     {
       "test": "Health Check",
       "success": true,
       "details": "Status: 200 (expected 200)",
-      "timestamp": "2026-01-31T06:35:55.501306"
+      "timestamp": "2026-01-31T06:36:52.270190"
     },
     {
       "test": "User Registration",
       "success": true,
       "details": "Status: 200 (expected 200)",
-      "timestamp": "2026-01-31T06:35:55.764298"
+      "timestamp": "2026-01-31T06:36:52.554819"
     },
     {
       "test": "Auth Me",
       "success": true,
       "details": "Status: 200 (expected 200)",
-      "timestamp": "2026-01-31T06:35:55.806769"
+      "timestamp": "2026-01-31T06:36:52.595282"
     },
     {
       "test": "User Login",
       "success": true,
       "details": "Status: 200 (expected 200)",
-      "timestamp": "2026-01-31T06:35:56.068695"
+      "timestamp": "2026-01-31T06:36:52.859089"
     },
     {
       "test": "Auth Me",
       "success": true,
       "details": "Status: 200 (expected 200)",
-      "timestamp": "2026-01-31T06:35:56.148103"
+      "timestamp": "2026-01-31T06:36:52.897678"
     },
     {
       "test": "Protected Route (No Auth)",
-      "success": false,
-      "details": "Status: 403 (expected 401), Response: {\"detail\":\"Not authenticated\"}",
-      "timestamp": "2026-01-31T06:35:56.192746"
+      "success": true,
+      "details": "Status: 401 (expected 401)",
+      "timestamp": "2026-01-31T06:36:52.936976"
     },
     {
       "test": "BitMEX Symbols",
       "success": true,
       "details": "Status: 200 (expected 200)",
-      "timestamp": "2026-01-31T06:35:56.534751"
+      "timestamp": "2026-01-31T06:36:54.169790"
     },
     {
       "test": "Analytics Snapshot",
       "success": true,
       "details": "Status: 200 (expected 200)",
-      "timestamp": "2026-01-31T06:35:56.789866"
+      "timestamp": "2026-01-31T06:36:54.429170"
     },
     {
       "test": "Analytics Flow",
       "success": true,
       "details": "Status: 200 (expected 200)",
-      "timestamp": "2026-01-31T06:35:57.112456"
+      "timestamp": "2026-01-31T06:36:54.725633"
     },
     {
       "test": "BitMEX Candles",
       "success": true,
       "details": "Status: 200 (expected 200)",
-      "timestamp": "2026-01-31T06:35:57.376135"
+      "timestamp": "2026-01-31T06:36:54.986931"
     },
     {
       "test": "Backtest Run",
       "success": true,
       "details": "Status: 200 (expected 200)",
-      "timestamp": "2026-01-31T06:35:57.749354"
+      "timestamp": "2026-01-31T06:36:55.472478"
     }
   ]
 }
