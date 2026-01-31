@@ -27,7 +27,6 @@ export function useAuth() {
 
   useEffect(() => {
     fetchMe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function login(email, password) {
