@@ -69,6 +69,9 @@ export default function Analytics() {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
+  const [pollingEnabled, setPollingEnabled] = useState(true);
+  const [pollIntervalSec, setPollIntervalSec] = useState(5);
+
   const priceSeries = useMemo(() => {
     return priceCandles.map((c) => ({ t: c.timestamp, close: c.close }));
   }, [priceCandles]);
