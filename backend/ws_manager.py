@@ -3,7 +3,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
 import websockets
 
@@ -24,12 +24,11 @@ class BitmexWsConfig:
 
 
 class BitmexWsManager:
-    """Single background WS connection that broadcasts the raw messages to all connected clients.
+    """Single background WS connection that broadcasts messages to all connected clients.
 
-    MVP assumptions:
-    - One symbol at a time (server-wide). Users can switch symbol; server restarts WS subscription.
-    - Subscriptions: orderBookL2_25 and trade.
-    - We also keep a small in-memory latest snapshot for quick UI hydration.
+    - Subscriptions: orderBookL2_25 + trade
+    - One symbol at a time (server-wide) for MVP simplicity
+    - Optional callback on orderbook updates (for persistence/heatmap)
     """
 
     def __init__(self):
@@ -38,11 +37,14 @@ class BitmexWsManager:
         self._stop_event = asyncio.Event()
         self._clients: Set[asyncio.Queue] = set()
 
-        # book state for orderBookL2_25: id -> {price, size, side}
+        # book state: id -> {price, size, side}
         self._book: Dict[int, Dict[str, Any]] = {}
         self._book_ready = False
 
         self.latest_market: Dict[str, Any] = {"ts": now_iso(), "symbol": self.config.symbol}
+
+        # Optional async callback invoked with latest_market payload
+        self.on_orderbook: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
 
     def status(self) -> Dict[str, Any]:
         return {
@@ -73,6 +75,11 @@ class BitmexWsManager:
     async def restart(self, symbol: Optional[str] = None):
         if symbol:
             self.config.symbol = symbol
+        # reset book to avoid mixing symbols
+        self._book = {}
+        self._book_ready = False
+        self.latest_market = {"ts": now_iso(), "symbol": self.config.symbol}
+
         await self.stop()
         await self.start()
 
@@ -80,7 +87,6 @@ class BitmexWsManager:
         q: asyncio.Queue = asyncio.Queue(maxsize=200)
         self._clients.add(q)
 
-        # send a quick hello + last known snapshot
         await self._safe_put(q, {"type": "hello", "ts": now_iso(), "symbol": self.config.symbol})
         if self.latest_market:
             await self._safe_put(q, {"type": "snapshot", **self.latest_market})
@@ -107,7 +113,6 @@ class BitmexWsManager:
             return False
 
     def _apply_orderbook_msg(self, msg: Dict[str, Any]):
-        # orderBookL2_25 action: partial/insert/update/delete
         action = msg.get("action")
         data = msg.get("data") or []
 
@@ -173,7 +178,6 @@ class BitmexWsManager:
         mid = (best_bid + best_ask) / 2
         spread = best_ask - best_bid
 
-        # keep top 25 each (already is 25 levels in feed but safe)
         top_bids = [{"price": r["price"], "size": r["size"]} for r in bids[:25]]
         top_asks = [{"price": r["price"], "size": r["size"]} for r in asks[:25]]
 
@@ -214,9 +218,10 @@ class BitmexWsManager:
                             if top:
                                 self.latest_market = {"ts": now_iso(), "symbol": self.config.symbol, **top}
                                 await self.broadcast({"type": "orderbook", **self.latest_market})
+                                if self.on_orderbook:
+                                    asyncio.create_task(self.on_orderbook(self.latest_market))
 
                         elif table == "trade":
-                            # send the latest trade for UI tick/flow
                             data = msg.get("data") or []
                             if data:
                                 last = data[-1]
@@ -232,7 +237,6 @@ class BitmexWsManager:
                                     }
                                 )
 
-                        # BitMEX also sends info/success etc.
                         elif "info" in msg:
                             await self.broadcast({"type": "ws_info", "ts": now_iso(), "payload": msg})
 
