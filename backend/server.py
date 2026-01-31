@@ -309,6 +309,20 @@ class LiquidationsResponse(BaseModel):
     points: List[LiquidationPoint]
 
 
+class HeatmapCell(BaseModel):
+    t: str
+    side: Literal["Buy", "Sell"]
+    price: float
+    size: float
+
+
+class HeatmapResponse(BaseModel):
+    symbol: str
+    ts: str
+    minutes: int
+    cells: List[HeatmapCell]
+
+
 ConditionMetric = Literal["close", "return_1", "sma", "ema", "volatility"]
 
 
