@@ -43,6 +43,8 @@ BITMEX_BASE_URL = "https://www.bitmex.com/api/v1"
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
+ws_manager = BitmexWsManager()
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
