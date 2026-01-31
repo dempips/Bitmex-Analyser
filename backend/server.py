@@ -1306,6 +1306,19 @@ async def get_backtest(run_id: str, user: Dict[str, Any] = Depends(get_current_u
 app.include_router(api_router)
 
 
+@app.on_event("startup")
+async def startup():
+    # Start WS manager for default symbol.
+    try:
+        await ws_manager.start()
+    except Exception as e:
+        logger.warning("WS manager failed to start on startup: %s", e)
+
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    try:
+        await ws_manager.stop()
+    except Exception:
+        pass
     client.close()
