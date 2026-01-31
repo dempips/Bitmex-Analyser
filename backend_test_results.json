@@ -1,0 +1,77 @@
+{
+  "summary": {
+    "total_tests": 11,
+    "passed_tests": 8,
+    "failed_tests": 3,
+    "success_rate": 72.72727272727273,
+    "timestamp": "2026-01-31T06:32:28.642826"
+  },
+  "detailed_results": [
+    {
+      "test": "Health Check",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T06:32:26.147246"
+    },
+    {
+      "test": "User Registration",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T06:32:26.465686"
+    },
+    {
+      "test": "Auth Me",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T06:32:26.506265"
+    },
+    {
+      "test": "User Login",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T06:32:26.771315"
+    },
+    {
+      "test": "Auth Me",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T06:32:26.813936"
+    },
+    {
+      "test": "Protected Route (No Auth)",
+      "success": false,
+      "details": "Status: 403 (expected 401), Response: {\"detail\":\"Not authenticated\"}",
+      "timestamp": "2026-01-31T06:32:26.849898"
+    },
+    {
+      "test": "BitMEX Symbols",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T06:32:27.213857"
+    },
+    {
+      "test": "Analytics Snapshot",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T06:32:27.615941"
+    },
+    {
+      "test": "Analytics Flow",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T06:32:27.944927"
+    },
+    {
+      "test": "BitMEX Candles",
+      "success": false,
+      "details": "Status: 520 (expected 200), Response: Internal Server Error",
+      "timestamp": "2026-01-31T06:32:28.218688"
+    },
+    {
+      "test": "Backtest Run",
+      "success": false,
+      "details": "Status: 520 (expected 200), Response: Internal Server Error",
+      "timestamp": "2026-01-31T06:32:28.641902"
+    }
+  ]
+}
