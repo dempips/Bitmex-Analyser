@@ -370,6 +370,25 @@ export default function Analytics() {
             </div>
 
             <div className="space-y-2">
+              <Label data-testid="analytics-poll-interval-label" htmlFor="pollInterval">
+                Poll interval (sec)
+              </Label>
+              <Input
+                data-testid="analytics-poll-interval-input"
+                id="pollInterval"
+                type="number"
+                value={pollIntervalSec}
+                min={2}
+                max={60}
+                onChange={(e) => setPollIntervalSec(Number(e.target.value))}
+                className="rounded-xl"
+              />
+              <div data-testid="analytics-poll-interval-hint" className="text-xs text-muted-foreground">
+                Used when polling mode is enabled.
+              </div>
+            </div>
+
+            <div className="space-y-2">
               <Label data-testid="analytics-liq-minutes-label" htmlFor="liqMinutes">
                 Liquidations (min)
               </Label>
