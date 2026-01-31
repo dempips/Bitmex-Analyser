@@ -879,7 +879,7 @@ async def flow_timeseries(symbol: str, minutes: int = 60):
             "reverse": "false",
             "startTime": iso(start_ts),
             "endTime": iso(end_ts),
-            "count": 2000,
+            "count": 500,
         },
     )
     close_by_minute: Dict[datetime, float] = {}
@@ -925,7 +925,7 @@ async def bitmex_funding(symbol: str, start: str, end: str):
             "symbol": symbol,
             "startTime": iso(start_dt),
             "endTime": iso(end_dt),
-            "count": 1000,
+            "count": 500,
             "reverse": "false",
         },
     )
@@ -960,7 +960,7 @@ async def bitmex_open_interest(symbol: str, start: str, end: str):
             "symbol": symbol,
             "startTime": iso(start_dt),
             "endTime": iso(end_dt),
-            "count": 1000,
+            "count": 500,
             "reverse": "false",
         },
     )
@@ -985,7 +985,7 @@ async def bitmex_open_interest(symbol: str, start: str, end: str):
 @api_router.get("/bitmex/liquidations", response_model=LiquidationsResponse, tags=["bitmex"])
 async def bitmex_liquidations(symbol: str, minutes: int = 60):
     minutes = max(5, min(minutes, 240))
-    count = min(1000, minutes * 50)
+    count = min(500, minutes * 50)
 
     rows = bitmex_get(
         "/liquidation",
