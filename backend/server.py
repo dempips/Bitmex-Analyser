@@ -576,6 +576,29 @@ async def live_stream():
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
+@api_router.get("/live/heatmap", response_model=HeatmapResponse, tags=["live"])
+async def live_heatmap(symbol: str, minutes: int = 10):
+    minutes = max(1, min(minutes, 10))
+    cutoff = iso(now_utc() - timedelta(minutes=minutes))
+
+    cur = db.orderbook_heat.find({"symbol": symbol, "ts": {"$gte": cutoff}}, {"_id": 0}).sort("ts", 1)
+    docs = await cur.to_list(300)
+
+    cells: List[HeatmapCell] = []
+    for d in docs:
+        t = d.get("ts")
+        for b in (d.get("bids") or []):
+            if b.get("price") is None:
+                continue
+            cells.append(HeatmapCell(t=t, side="Buy", price=float(b.get("price") or 0), size=float(b.get("size") or 0)))
+        for a in (d.get("asks") or []):
+            if a.get("price") is None:
+                continue
+            cells.append(HeatmapCell(t=t, side="Sell", price=float(a.get("price") or 0), size=float(a.get("size") or 0)))
+
+    return HeatmapResponse(symbol=symbol, ts=iso(now_utc()), minutes=minutes, cells=cells)
+
+
 # -------- Auth --------
 @api_router.post("/auth/register", response_model=AuthResponse, tags=["auth"])
 async def register(payload: RegisterRequest):
