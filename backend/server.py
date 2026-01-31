@@ -3,7 +3,7 @@ import uuid
 import logging
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal, Tuple
 
 import jwt
 import requests
@@ -78,6 +78,11 @@ def now_utc() -> datetime:
 
 def iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def floor_to_minute(dt: datetime) -> datetime:
+    dt2 = dt.astimezone(timezone.utc)
+    return dt2.replace(second=0, microsecond=0)
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -190,12 +195,6 @@ class Candle(BaseModel):
     volume: float
 
 
-class AnalyticsSnapshotRequest(BaseModel):
-    symbol: str
-    depth: int = 50
-    bands_bps: List[int] = Field(default_factory=lambda: [10, 25, 100])
-
-
 class BandDepth(BaseModel):
     band_bps: int
     bid_depth: float
@@ -224,6 +223,84 @@ class FlowResponse(BaseModel):
     cvd: float
     price_change: float
     absorption_ratio: float
+
+
+class OrderBookLevel(BaseModel):
+    price: float
+    size: float
+
+
+class OrderBookL2Response(BaseModel):
+    symbol: str
+    ts: str
+    bids: List[OrderBookLevel]
+    asks: List[OrderBookLevel]
+
+
+class DepthPoint(BaseModel):
+    price: float
+    cum_size: float
+
+
+class OrderBookDepthResponse(BaseModel):
+    symbol: str
+    ts: str
+    bids: List[DepthPoint]
+    asks: List[DepthPoint]
+
+
+class FlowSeriesPoint(BaseModel):
+    t: str
+    buy: float
+    sell: float
+    delta: float
+    cvd: float
+    close: Optional[float] = None
+
+
+class FlowSeriesResponse(BaseModel):
+    symbol: str
+    ts: str
+    minutes: int
+    points: List[FlowSeriesPoint]
+
+
+class FundingPoint(BaseModel):
+    t: str
+    funding_rate: float
+    momentum: float
+
+
+class FundingResponse(BaseModel):
+    symbol: str
+    ts: str
+    points: List[FundingPoint]
+
+
+class OpenInterestPoint(BaseModel):
+    t: str
+    open_interest: float
+    delta: float
+
+
+class OpenInterestResponse(BaseModel):
+    symbol: str
+    ts: str
+    points: List[OpenInterestPoint]
+
+
+class LiquidationPoint(BaseModel):
+    t: str
+    price: float
+    size: float
+    side: Optional[str] = None
+
+
+class LiquidationsResponse(BaseModel):
+    symbol: str
+    ts: str
+    minutes: int
+    points: List[LiquidationPoint]
 
 
 ConditionMetric = Literal["close", "return_1", "sma", "ema", "volatility"]
@@ -301,7 +378,7 @@ class BacktestRunResponse(BaseModel):
 def bitmex_get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
     url = f"{BITMEX_BASE_URL}{path}"
     try:
-        resp = requests.get(url, params=params, timeout=15)
+        resp = requests.get(url, params=params, timeout=20)
         if resp.status_code >= 400:
             raise HTTPException(
                 status_code=resp.status_code,
@@ -512,7 +589,6 @@ async def bitmex_symbols():
                 listing=row.get("listing"),
             )
         )
-    # sort symbols (XBTUSD etc.)
     out.sort(key=lambda x: x.symbol)
     return out
 
@@ -524,8 +600,6 @@ async def bitmex_candles(symbol: str, start: str, end: str):
     if end_dt <= start_dt:
         raise HTTPException(status_code=400, detail="end must be after start")
 
-    # BitMEX bucketed supports count; we keep requests small for MVP
-    # We'll pull up to ~2000 minutes per call; if bigger, paginate.
     all_rows: List[Dict[str, Any]] = []
     cursor = start_dt
     while cursor < end_dt:
@@ -543,11 +617,8 @@ async def bitmex_candles(symbol: str, start: str, end: str):
         if not isinstance(rows, list):
             break
         all_rows.extend(rows)
-        if len(rows) < 10 and chunk_end < end_dt:
-            # very sparse; still move forward
-            cursor = chunk_end
-        elif rows:
-            # next cursor: last timestamp + 1m
+
+        if rows:
             last_ts = parse_iso(rows[-1]["timestamp"]) + timedelta(minutes=1)
             cursor = max(last_ts, chunk_end)
         else:
@@ -560,7 +631,6 @@ async def bitmex_candles(symbol: str, start: str, end: str):
     for r in all_rows:
         if not r.get("timestamp"):
             continue
-        # Some bucketed fields are None at times
         candles.append(
             Candle(
                 timestamp=r["timestamp"],
@@ -578,7 +648,6 @@ def compute_orderbook_metrics(
     l2: List[Dict[str, Any]],
     bands_bps: List[int],
 ) -> Dict[str, Any]:
-    # L2 returns rows with {symbol,id,side,size,price}
     bids = [r for r in l2 if r.get("side") == "Buy" and r.get("price") is not None]
     asks = [r for r in l2 if r.get("side") == "Sell" and r.get("price") is not None]
     if not bids or not asks:
@@ -639,6 +708,52 @@ def compute_orderbook_metrics(
     }
 
 
+def build_l2_side(levels: List[Dict[str, Any]], side: str) -> List[OrderBookLevel]:
+    out: List[OrderBookLevel] = []
+    for r in levels:
+        if r.get("side") != side:
+            continue
+        p = r.get("price")
+        if p is None:
+            continue
+        out.append(OrderBookLevel(price=float(p), size=float(r.get("size") or 0)))
+    # aggregate by price
+    agg: Dict[float, float] = {}
+    for lv in out:
+        agg[lv.price] = agg.get(lv.price, 0.0) + lv.size
+    prices = sorted(agg.keys(), reverse=(side == "Buy"))
+    return [OrderBookLevel(price=float(p), size=float(agg[p])) for p in prices]
+
+
+def cumulative_depth(levels: List[OrderBookLevel]) -> List[DepthPoint]:
+    cum = 0.0
+    pts: List[DepthPoint] = []
+    for lv in levels:
+        cum += lv.size
+        pts.append(DepthPoint(price=lv.price, cum_size=cum))
+    return pts
+
+
+@api_router.get("/bitmex/orderbook/l2", response_model=OrderBookL2Response, tags=["bitmex"])
+async def bitmex_orderbook_l2(symbol: str, depth: int = 50):
+    depth = max(10, min(depth, 200))
+    l2 = bitmex_get("/orderBook/L2", params={"symbol": symbol, "depth": depth})
+    bids = build_l2_side(l2, "Buy")
+    asks = build_l2_side(l2, "Sell")
+    return OrderBookL2Response(symbol=symbol, ts=iso(now_utc()), bids=bids, asks=asks)
+
+
+@api_router.get("/bitmex/orderbook/depth", response_model=OrderBookDepthResponse, tags=["bitmex"])
+async def bitmex_orderbook_depth(symbol: str, depth: int = 50):
+    ob = await bitmex_orderbook_l2(symbol=symbol, depth=depth)
+    return OrderBookDepthResponse(
+        symbol=symbol,
+        ts=ob.ts,
+        bids=cumulative_depth(ob.bids),
+        asks=cumulative_depth(ob.asks),
+    )
+
+
 @api_router.get("/bitmex/analytics/snapshot", response_model=AnalyticsSnapshotResponse, tags=["analytics"])
 async def analytics_snapshot(symbol: str, depth: int = 50, bands_bps: str = "10,25,100"):
     try:
@@ -662,7 +777,6 @@ async def analytics_snapshot(symbol: str, depth: int = 50, bands_bps: str = "10,
 @api_router.get("/bitmex/analytics/flow", response_model=FlowResponse, tags=["analytics"])
 async def analytics_flow(symbol: str, minutes: int = 5):
     minutes = max(1, min(minutes, 60))
-    # fetch latest trades
     count = min(1000, minutes * 200)  # heuristic
     trades = bitmex_get(
         "/trade",
@@ -703,9 +817,6 @@ async def analytics_flow(symbol: str, minutes: int = 5):
     total = buy_vol + sell_vol
     aggressive_imbalance = ((buy_vol - sell_vol) / total) if total else 0.0
     price_change = (last_price - first_price) if first_price else 0.0
-
-    # absorption proxy: how much aggressive volume is required per unit price change
-    # If price_change is small, absorption ratio will be high.
     absorption_ratio = (total / (abs(price_change) + 1e-9))
 
     return FlowResponse(
@@ -719,6 +830,198 @@ async def analytics_flow(symbol: str, minutes: int = 5):
         price_change=price_change,
         absorption_ratio=absorption_ratio,
     )
+
+
+@api_router.get("/bitmex/flow/timeseries", response_model=FlowSeriesResponse, tags=["analytics"])
+async def flow_timeseries(symbol: str, minutes: int = 60):
+    minutes = max(5, min(minutes, 240))
+
+    # trades for window
+    count = min(2000, minutes * 250)
+    trades = bitmex_get(
+        "/trade",
+        params={
+            "symbol": symbol,
+            "count": count,
+            "reverse": "true",
+        },
+    )
+    if not isinstance(trades, list) or not trades:
+        raise HTTPException(status_code=502, detail="No trades from BitMEX")
+
+    end_ts = parse_iso(trades[0]["timestamp"])
+    start_ts = end_ts - timedelta(minutes=minutes)
+
+    # build per-minute bins
+    bins: Dict[datetime, Dict[str, float]] = {}
+    # iterate chronological
+    for t in reversed(trades):
+        ts = parse_iso(t["timestamp"])
+        if ts < start_ts:
+            continue
+        minute = floor_to_minute(ts)
+        if minute not in bins:
+            bins[minute] = {"buy": 0.0, "sell": 0.0}
+        sz = float(t.get("size") or 0)
+        side = t.get("side")
+        if side == "Buy":
+            bins[minute]["buy"] += sz
+        elif side == "Sell":
+            bins[minute]["sell"] += sz
+
+    # candles for close overlay
+    candle_rows = bitmex_get(
+        "/trade/bucketed",
+        params={
+            "symbol": symbol,
+            "binSize": "1m",
+            "partial": "false",
+            "reverse": "false",
+            "startTime": iso(start_ts),
+            "endTime": iso(end_ts),
+            "count": 2000,
+        },
+    )
+    close_by_minute: Dict[datetime, float] = {}
+    if isinstance(candle_rows, list):
+        for r in candle_rows:
+            if not r.get("timestamp"):
+                continue
+            m = floor_to_minute(parse_iso(r["timestamp"]))
+            close_by_minute[m] = float(r.get("close") or 0)
+
+    minutes_list = sorted(bins.keys())
+    points: List[FlowSeriesPoint] = []
+    cvd = 0.0
+    for m in minutes_list:
+        buy = bins[m]["buy"]
+        sell = bins[m]["sell"]
+        delta = buy - sell
+        cvd += delta
+        points.append(
+            FlowSeriesPoint(
+                t=iso(m),
+                buy=buy,
+                sell=sell,
+                delta=delta,
+                cvd=cvd,
+                close=close_by_minute.get(m),
+            )
+        )
+
+    return FlowSeriesResponse(symbol=symbol, ts=iso(now_utc()), minutes=minutes, points=points)
+
+
+@api_router.get("/bitmex/funding", response_model=FundingResponse, tags=["bitmex"])
+async def bitmex_funding(symbol: str, start: str, end: str):
+    start_dt = parse_iso(start)
+    end_dt = parse_iso(end)
+    if end_dt <= start_dt:
+        raise HTTPException(status_code=400, detail="end must be after start")
+
+    rows = bitmex_get(
+        "/funding",
+        params={
+            "symbol": symbol,
+            "startTime": iso(start_dt),
+            "endTime": iso(end_dt),
+            "count": 2000,
+            "reverse": "false",
+        },
+    )
+
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=502, detail="Unexpected funding response")
+
+    prev: Optional[float] = None
+    points: List[FundingPoint] = []
+    for r in rows:
+        t = r.get("timestamp") or r.get("fundingTimestamp")
+        if not t:
+            continue
+        fr = float(r.get("fundingRate") or 0)
+        mom = fr - prev if prev is not None else 0.0
+        points.append(FundingPoint(t=t, funding_rate=fr, momentum=mom))
+        prev = fr
+
+    return FundingResponse(symbol=symbol, ts=iso(now_utc()), points=points)
+
+
+@api_router.get("/bitmex/open-interest", response_model=OpenInterestResponse, tags=["bitmex"])
+async def bitmex_open_interest(symbol: str, start: str, end: str):
+    start_dt = parse_iso(start)
+    end_dt = parse_iso(end)
+    if end_dt <= start_dt:
+        raise HTTPException(status_code=400, detail="end must be after start")
+
+    rows = bitmex_get(
+        "/openInterest",
+        params={
+            "symbol": symbol,
+            "startTime": iso(start_dt),
+            "endTime": iso(end_dt),
+            "count": 2000,
+            "reverse": "false",
+        },
+    )
+
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=502, detail="Unexpected openInterest response")
+
+    prev: Optional[float] = None
+    points: List[OpenInterestPoint] = []
+    for r in rows:
+        t = r.get("timestamp")
+        if not t:
+            continue
+        oi = float(r.get("openInterest") or 0)
+        d = oi - prev if prev is not None else 0.0
+        points.append(OpenInterestPoint(t=t, open_interest=oi, delta=d))
+        prev = oi
+
+    return OpenInterestResponse(symbol=symbol, ts=iso(now_utc()), points=points)
+
+
+@api_router.get("/bitmex/liquidations", response_model=LiquidationsResponse, tags=["bitmex"])
+async def bitmex_liquidations(symbol: str, minutes: int = 60):
+    minutes = max(5, min(minutes, 240))
+    count = min(2000, minutes * 50)
+
+    rows = bitmex_get(
+        "/liquidation",
+        params={
+            "symbol": symbol,
+            "count": count,
+            "reverse": "true",
+        },
+    )
+
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=502, detail="Unexpected liquidation response")
+
+    # Filter by time window if timestamps exist
+    points: List[LiquidationPoint] = []
+    end_ts = now_utc()
+    start_ts = end_ts - timedelta(minutes=minutes)
+
+    for r in rows:
+        t = r.get("timestamp")
+        if not t:
+            continue
+        ts = parse_iso(t)
+        if ts < start_ts:
+            continue
+        points.append(
+            LiquidationPoint(
+                t=t,
+                price=float(r.get("price") or 0),
+                size=float(r.get("leavesQty") or r.get("orderQty") or r.get("qty") or 0),
+                side=r.get("side"),
+            )
+        )
+
+    points = list(reversed(points))
+    return LiquidationsResponse(symbol=symbol, ts=iso(now_utc()), minutes=minutes, points=points)
 
 
 # -------- Strategy CRUD --------
@@ -740,7 +1043,20 @@ async def create_strategy(payload: StrategyCreate, user: Dict[str, Any] = Depend
 
 @api_router.get("/strategies", response_model=List[StrategyOut], tags=["strategies"])
 async def list_strategies(user: Dict[str, Any] = Depends(get_current_user)):
-    cur = db.strategies.find({"user_id": str(user["_id"])}, {"_id": 1, "user_id": 1, "name": 1, "symbol": 1, "entry_conditions": 1, "exit_conditions": 1, "fee_bps": 1, "slippage_bps": 1, "created_at": 1})
+    cur = db.strategies.find(
+        {"user_id": str(user["_id"])},
+        {
+            "_id": 1,
+            "user_id": 1,
+            "name": 1,
+            "symbol": 1,
+            "entry_conditions": 1,
+            "exit_conditions": 1,
+            "fee_bps": 1,
+            "slippage_bps": 1,
+            "created_at": 1,
+        },
+    )
     docs = await cur.sort("created_at", -1).to_list(200)
     out: List[StrategyOut] = []
     for d in docs:
@@ -785,7 +1101,6 @@ def compute_drawdown(equity: List[float]) -> float:
 
 @api_router.post("/backtests/run", response_model=BacktestRunResponse, tags=["backtests"])
 async def run_backtest(payload: BacktestRunRequest, user: Dict[str, Any] = Depends(get_current_user)):
-    # Pull candles
     candles = await bitmex_candles(symbol=payload.symbol, start=payload.start, end=payload.end)
     if len(candles) < 200:
         raise HTTPException(status_code=400, detail="Not enough candles for backtest (need at least ~200 minutes)")
@@ -803,34 +1118,32 @@ async def run_backtest(payload: BacktestRunRequest, user: Dict[str, Any] = Depen
     equity_curve: List[Dict[str, Any]] = []
     trades: List[BacktestTrade] = []
 
-    # We simulate decision at close of bar i, execute at open of i+1
     for i in range(0, len(candles) - 1):
         ts = candles[i].timestamp
         px = candles[i].close
 
-        # record equity at close
         equity_curve.append({"t": ts, "equity": equity, "price": px})
 
         if not in_pos:
-            if payload.strategy.entry_conditions and all(eval_condition(series, i, c) for c in payload.strategy.entry_conditions):
+            if payload.strategy.entry_conditions and all(
+                eval_condition(series, i, c) for c in payload.strategy.entry_conditions
+            ):
                 nxt = candles[i + 1]
                 entry_time = nxt.timestamp
                 entry_price = nxt.open * (1 + slip)
-                # entry fee
                 equity *= (1 - fee)
                 in_pos = True
         else:
-            if payload.strategy.exit_conditions and all(eval_condition(series, i, c) for c in payload.strategy.exit_conditions):
+            if payload.strategy.exit_conditions and all(
+                eval_condition(series, i, c) for c in payload.strategy.exit_conditions
+            ):
                 nxt = candles[i + 1]
                 exit_time = nxt.timestamp
                 exit_price = nxt.open * (1 - slip)
-                # exit fee
                 equity *= (1 - fee)
 
                 ret = (exit_price / entry_price) - 1.0 if entry_price else 0.0
-                pnl = equity * 0.0  # placeholder; we apply returns multiplicatively below
 
-                # Apply PnL multiplicatively (long only, fully invested)
                 before = equity
                 equity = equity * (1 + ret)
                 pnl = equity - before
@@ -847,7 +1160,6 @@ async def run_backtest(payload: BacktestRunRequest, user: Dict[str, Any] = Depen
                 )
                 in_pos = False
 
-    # final point
     equity_curve.append({"t": candles[-1].timestamp, "equity": equity, "price": candles[-1].close})
 
     total_return = (equity / payload.initial_capital - 1.0) if payload.initial_capital else 0.0
