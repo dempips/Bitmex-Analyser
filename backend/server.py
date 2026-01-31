@@ -469,6 +469,27 @@ async def login(payload: LoginRequest):
     return AuthResponse(token=token, user=mongo_to_user_out(user))
 
 
+@api_router.post("/auth/guest", response_model=AuthResponse, tags=["auth"])
+async def guest_login():
+    # Simple shared guest account for preview/demo.
+    # Anyone can use this endpoint; avoid storing any sensitive data under this account.
+    guest_email = "guest@trademetryx.local"
+
+    user = await db.users.find_one({"email": guest_email})
+    if not user:
+        user_doc = {
+            "email": guest_email,
+            "password_hash": hash_password(str(uuid.uuid4())),
+            "created_at": iso(now_utc()),
+            "is_guest": True,
+        }
+        res = await db.users.insert_one(user_doc)
+        user = {"_id": res.inserted_id, **user_doc}
+
+    token = create_access_token(user_id=str(user["_id"]), email=guest_email)
+    return AuthResponse(token=token, user=mongo_to_user_out(user))
+
+
 @api_router.get("/auth/me", response_model=MeResponse, tags=["auth"])
 async def me(user: Dict[str, Any] = Depends(get_current_user)):
     return MeResponse(user=mongo_to_user_out(user))

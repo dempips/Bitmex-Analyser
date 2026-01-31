@@ -36,6 +36,13 @@ export function useAuth() {
     return res.data;
   }
 
+  async function guestLogin() {
+    const res = await api.post("/auth/guest");
+    setToken(res.data.token);
+    setUser(res.data.user);
+    return res.data;
+  }
+
   async function register(email, password) {
     const res = await api.post("/auth/register", { email, password });
     setToken(res.data.token);
@@ -48,5 +55,5 @@ export function useAuth() {
     setUser(null);
   }
 
-  return { user, loading, isAuthed, login, register, logout, refresh: fetchMe };
+  return { user, loading, isAuthed, login, guestLogin, register, logout, refresh: fetchMe };
 }

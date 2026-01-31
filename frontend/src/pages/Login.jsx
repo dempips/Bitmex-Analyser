@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
-export default function Login({ onLogin }) {
+export default function Login({ onLogin, onGuest }) {
   const nav = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -115,6 +115,30 @@ export default function Login({ onLogin }) {
                   disabled={busy}
                 >
                   {busy ? "Signing in…" : "Sign in"}
+                </Button>
+
+                <Button
+                  data-testid="login-guest-button"
+                  type="button"
+                  variant="outline"
+                  className="w-full rounded-full"
+                  disabled={busy}
+                  onClick={async () => {
+                    if (!onGuest) return;
+                    setError(null);
+                    setBusy(true);
+                    try {
+                      await onGuest();
+                      nav("/app/analytics");
+                    } catch (err) {
+                      const msg = err?.response?.data?.detail || "Guest login failed";
+                      setError(msg);
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  Continue as guest
                 </Button>
               </form>
 

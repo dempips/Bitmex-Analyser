@@ -33,7 +33,7 @@ export default function App() {
             path="/"
             element={auth.user ? <Navigate to="/app/analytics" replace /> : <Navigate to="/login" replace />}
           />
-          <Route path="/login" element={<Login onLogin={auth.login} />} />
+          <Route path="/login" element={<Login onLogin={auth.login} onGuest={auth.guestLogin} />} />
           <Route path="/register" element={<Register onRegister={auth.register} />} />
 
           <Route
