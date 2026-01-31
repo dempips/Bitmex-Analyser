@@ -232,12 +232,47 @@ export default function Analytics() {
               Analytics
             </h1>
             <div data-testid="analytics-subtitle" className="text-sm text-muted-foreground mt-1">
-              Charts-first view: depth, heat, flow, funding, OI, liquidations. Polling every 5 seconds.
+              Charts-first view: depth, heat, flow, funding, OI, liquidations.
+            </div>
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <Badge
+                data-testid="live-connection-badge"
+                variant={live.connected ? "secondary" : "destructive"}
+                className="rounded-full"
+              >
+                Live feed: {live.connected ? "Connected" : "Disconnected"}
+              </Badge>
+              <Badge data-testid="live-symbol-badge" variant="outline" className="rounded-full">
+                WS symbol: {live.status?.symbol || symbol}
+              </Badge>
+              <div data-testid="live-last-message" className="text-xs text-muted-foreground">
+                {live.lastMessageAt ? `Last live message: ${Math.round((Date.now() - live.lastMessageAt) / 1000)}s ago` : "Waiting for live messages…"}
+              </div>
             </div>
           </div>
-          <Button data-testid="analytics-refresh-button" className="rounded-full" onClick={refreshAll} disabled={busy}>
-            {busy ? "Refreshing…" : "Refresh now"}
-          </Button>
+
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <Button
+              data-testid="live-restart-button"
+              variant="outline"
+              className="rounded-full"
+              onClick={() => live.restart(symbol)}
+            >
+              Restart live feed
+            </Button>
+            <Button
+              data-testid="live-connect-button"
+              variant="outline"
+              className="rounded-full"
+              onClick={() => live.connect()}
+            >
+              Reconnect
+            </Button>
+
+            <Button data-testid="analytics-refresh-button" className="rounded-full" onClick={refreshAll} disabled={busy}>
+              {busy ? "Refreshing…" : "Refresh (polling)"}
+            </Button>
+          </div>
         </div>
       </div>
 
