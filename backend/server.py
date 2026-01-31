@@ -1323,6 +1323,32 @@ app.include_router(api_router)
 
 @app.on_event("startup")
 async def startup():
+    # Store rolling 10 minutes of orderbook snapshots for a real time-based heatmap.
+    async def persist_orderbook(ob: Dict[str, Any]):
+        try:
+            symbol = ob.get("symbol")
+            if not symbol:
+                return
+
+            ts = ob.get("ts")
+            if not ts:
+                return
+
+            doc = {
+                "symbol": symbol,
+                "ts": ts,
+                "bids": ob.get("bids") or [],
+                "asks": ob.get("asks") or [],
+            }
+            await db.orderbook_heat.insert_one(doc)
+
+            cutoff = iso(now_utc() - timedelta(minutes=10))
+            await db.orderbook_heat.delete_many({"symbol": symbol, "ts": {"$lt": cutoff}})
+        except Exception as e:
+            logger.debug("persist_orderbook failed: %s", e)
+
+    ws_manager.on_orderbook = persist_orderbook
+
     # Start WS manager for default symbol.
     try:
         await ws_manager.start()
