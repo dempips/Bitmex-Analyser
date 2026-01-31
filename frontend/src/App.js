@@ -1,54 +1,57 @@
-import { useEffect } from "react";
+import React from "react";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { useAuth } from "@/hooks/use-auth";
 
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
+import Login from "@/pages/Login";
+import Register from "@/pages/Register";
+import Analytics from "@/pages/Analytics";
+import Backtest from "@/pages/Backtest";
+import AppShell from "@/components/layout/AppShell";
 
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
+function Protected({ authed, loading, children }) {
+  if (loading) {
+    return (
+      <div data-testid="app-loading" className="min-h-screen flex items-center justify-center">
+        <div data-testid="app-loading-text" className="text-sm text-muted-foreground">Loading…</div>
+      </div>
+    );
+  }
+  if (!authed) return <Navigate to="/login" replace />;
+  return children;
+}
+
+export default function App() {
+  const auth = useAuth();
 
   return (
-    <div>
-      <header className="App-header">
-        <a
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
-
-function App() {
-  return (
-    <div className="App">
+    <div data-testid="app-root" className="min-h-screen">
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
+          <Route
+            path="/"
+            element={auth.user ? <Navigate to="/app/analytics" replace /> : <Navigate to="/login" replace />}
+          />
+          <Route path="/login" element={<Login onLogin={auth.login} />} />
+          <Route path="/register" element={<Register onRegister={auth.register} />} />
+
+          <Route
+            path="/app"
+            element={
+              <Protected authed={!!auth.user} loading={auth.loading}>
+                <AppShell user={auth.user} onLogout={auth.logout} />
+              </Protected>
+            }
+          >
+            <Route index element={<Navigate to="/app/analytics" replace />} />
+            <Route path="analytics" element={<Analytics />} />
+            <Route path="backtest" element={<Backtest />} />
           </Route>
+
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
     </div>
   );
 }
-
-export default App;

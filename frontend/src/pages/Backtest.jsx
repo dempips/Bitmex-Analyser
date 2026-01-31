@@ -1,0 +1,468 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { api } from "@/api/client";
+
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+
+function fmt(n, digits = 2) {
+  if (n === null || n === undefined) return "—";
+  return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+const metricOptions = [
+  { value: "close", label: "Close" },
+  { value: "return_1", label: "Return (1 bar)" },
+  { value: "sma", label: "SMA" },
+  { value: "ema", label: "EMA" },
+  { value: "volatility", label: "Volatility (std of returns)" },
+];
+
+const operators = [">", ">=", "<", "<=", "=="];
+const periods = [10, 20, 50];
+
+function ConditionEditor({ idx, value, onChange, onRemove, testPrefix }) {
+  const showPeriod = value.metric === "sma" || value.metric === "ema" || value.metric === "volatility";
+
+  return (
+    <div data-testid={`${testPrefix}-condition-${idx}`} className="rounded-2xl border bg-card/60 p-3">
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+        <div className="md:col-span-4 space-y-2">
+          <Label data-testid={`${testPrefix}-metric-label-${idx}`}>Metric</Label>
+          <Select value={value.metric} onValueChange={(v) => onChange({ ...value, metric: v, period: showPeriod ? value.period : null })}>
+            <SelectTrigger data-testid={`${testPrefix}-metric-select-${idx}`} className="rounded-xl">
+              <SelectValue placeholder="Metric" />
+            </SelectTrigger>
+            <SelectContent data-testid={`${testPrefix}-metric-select-content-${idx}`}>
+              {metricOptions.map((m) => (
+                <SelectItem data-testid={`${testPrefix}-metric-option-${idx}-${m.value}`} key={m.value} value={m.value}>
+                  {m.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="md:col-span-2 space-y-2">
+          <Label data-testid={`${testPrefix}-operator-label-${idx}`}>Op</Label>
+          <Select value={value.operator} onValueChange={(v) => onChange({ ...value, operator: v })}>
+            <SelectTrigger data-testid={`${testPrefix}-operator-select-${idx}`} className="rounded-xl">
+              <SelectValue placeholder="Op" />
+            </SelectTrigger>
+            <SelectContent data-testid={`${testPrefix}-operator-select-content-${idx}`}>
+              {operators.map((op) => (
+                <SelectItem data-testid={`${testPrefix}-operator-option-${idx}-${op}`} key={op} value={op}>
+                  {op}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {showPeriod ? (
+          <div className="md:col-span-2 space-y-2">
+            <Label data-testid={`${testPrefix}-period-label-${idx}`}>Period</Label>
+            <Select value={String(value.period || 10)} onValueChange={(v) => onChange({ ...value, period: Number(v) })}>
+              <SelectTrigger data-testid={`${testPrefix}-period-select-${idx}`} className="rounded-xl">
+                <SelectValue placeholder="Period" />
+              </SelectTrigger>
+              <SelectContent data-testid={`${testPrefix}-period-select-content-${idx}`}>
+                {periods.map((p) => (
+                  <SelectItem data-testid={`${testPrefix}-period-option-${idx}-${p}`} key={p} value={String(p)}>
+                    {p}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        ) : (
+          <div className="md:col-span-2" />
+        )}
+
+        <div className="md:col-span-3 space-y-2">
+          <Label data-testid={`${testPrefix}-value-label-${idx}`}>Value</Label>
+          <Input
+            data-testid={`${testPrefix}-value-input-${idx}`}
+            type="number"
+            value={value.value}
+            onChange={(e) => onChange({ ...value, value: Number(e.target.value) })}
+            className="rounded-xl"
+          />
+          <div data-testid={`${testPrefix}-value-hint-${idx}`} className="text-xs text-muted-foreground">
+            Tip: returns are decimals (e.g., 0.002 = +0.2%).
+          </div>
+        </div>
+
+        <div className="md:col-span-1 flex md:justify-end">
+          <Button data-testid={`${testPrefix}-remove-condition-${idx}`} type="button" variant="outline" className="rounded-full" onClick={onRemove}>
+            Remove
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function Backtest() {
+  const [symbols, setSymbols] = useState([]);
+  const [symbol, setSymbol] = useState("XBTUSD");
+
+  const [name, setName] = useState("OBI Momentum (MVP)");
+  const [feeBps, setFeeBps] = useState(7.5);
+  const [slipBps, setSlipBps] = useState(2.0);
+
+  const [entry, setEntry] = useState([{ metric: "ema", period: 20, operator: ">", value: 0 }]);
+  const [exit, setExit] = useState([{ metric: "return_1", operator: "<", value: -0.002, period: null }]);
+
+  const [start, setStart] = useState(() => {
+    const d = new Date(Date.now() - 1000 * 60 * 60 * 24 * 2);
+    return d.toISOString().slice(0, 16);
+  });
+  const [end, setEnd] = useState(() => {
+    const d = new Date();
+    return d.toISOString().slice(0, 16);
+  });
+
+  const [run, setRun] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const chartData = useMemo(() => {
+    if (!run?.equity_curve?.length) return [];
+    return run.equity_curve.map((p) => ({ t: p.t, equity: p.equity }));
+  }, [run]);
+
+  async function loadSymbols() {
+    const res = await api.get("/bitmex/symbols");
+    setSymbols(res.data);
+  }
+
+  useEffect(() => {
+    loadSymbols().catch(() => {});
+  }, []);
+
+  function addCondition(setter) {
+    setter((prev) => [...prev, { metric: "close", operator: ">", value: 0, period: null }]);
+  }
+
+  async function runBacktest() {
+    setBusy(true);
+    setError(null);
+    setRun(null);
+    try {
+      const payload = {
+        symbol,
+        start: new Date(start).toISOString(),
+        end: new Date(end).toISOString(),
+        strategy: {
+          name,
+          symbol,
+          entry_conditions: entry,
+          exit_conditions: exit,
+          fee_bps: Number(feeBps),
+          slippage_bps: Number(slipBps),
+        },
+        initial_capital: 10000,
+      };
+      const res = await api.post("/backtests/run", payload);
+      setRun(res.data);
+    } catch (e) {
+      setError(e?.response?.data?.detail || "Backtest failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div data-testid="backtest-page" className="space-y-6">
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <h1 data-testid="backtest-title" className="text-3xl sm:text-4xl font-semibold tracking-tight">Backtest</h1>
+          <div data-testid="backtest-subtitle" className="text-sm text-muted-foreground mt-1">
+            Rule-based, 1-minute candles. Long-only MVP.
+          </div>
+        </div>
+        <Button data-testid="backtest-run-button" className="rounded-full" onClick={runBacktest} disabled={busy}>
+          {busy ? "Running…" : "Run backtest"}
+        </Button>
+      </div>
+
+      <Card data-testid="backtest-config-card" className="rounded-2xl">
+        <CardHeader>
+          <CardTitle data-testid="backtest-config-title" className="text-base">Strategy configuration</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="space-y-2 md:col-span-2">
+              <Label data-testid="backtest-name-label" htmlFor="name">Name</Label>
+              <Input data-testid="backtest-name-input" id="name" value={name} onChange={(e) => setName(e.target.value)} className="rounded-xl" />
+            </div>
+
+            <div className="space-y-2">
+              <Label data-testid="backtest-symbol-label">Symbol</Label>
+              <Select value={symbol} onValueChange={setSymbol}>
+                <SelectTrigger data-testid="backtest-symbol-select" className="rounded-xl">
+                  <SelectValue placeholder="Select symbol" />
+                </SelectTrigger>
+                <SelectContent data-testid="backtest-symbol-select-content">
+                  {symbols.length ? (
+                    symbols.map((s) => (
+                      <SelectItem data-testid={`backtest-symbol-option-${s.symbol}`} key={s.symbol} value={s.symbol}>
+                        {s.symbol}
+                      </SelectItem>
+                    ))
+                  ) : (
+                    <SelectItem data-testid="backtest-symbol-option-loading" value="XBTUSD">Loading…</SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label data-testid="backtest-fee-label" htmlFor="fee">Fee (bps)</Label>
+              <Input
+                data-testid="backtest-fee-input"
+                id="fee"
+                type="number"
+                value={feeBps}
+                onChange={(e) => setFeeBps(Number(e.target.value))}
+                className="rounded-xl"
+              />
+              <div data-testid="backtest-fee-hint" className="text-xs text-muted-foreground">
+                Default approximates taker fee (can be tuned).
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label data-testid="backtest-slippage-label" htmlFor="slip">Slippage (bps)</Label>
+              <Input
+                data-testid="backtest-slippage-input"
+                id="slip"
+                type="number"
+                value={slipBps}
+                onChange={(e) => setSlipBps(Number(e.target.value))}
+                className="rounded-xl"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label data-testid="backtest-start-label" htmlFor="start">Start</Label>
+              <Input
+                data-testid="backtest-start-input"
+                id="start"
+                type="datetime-local"
+                value={start}
+                onChange={(e) => setStart(e.target.value)}
+                className="rounded-xl"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label data-testid="backtest-end-label" htmlFor="end">End</Label>
+              <Input
+                data-testid="backtest-end-input"
+                id="end"
+                type="datetime-local"
+                value={end}
+                onChange={(e) => setEnd(e.target.value)}
+                className="rounded-xl"
+              />
+            </div>
+          </div>
+
+          <Separator />
+
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div data-testid="backtest-entry-title" className="text-sm font-medium">Entry conditions (AND)</div>
+                <div data-testid="backtest-entry-subtitle" className="text-xs text-muted-foreground">All must be true to enter.</div>
+              </div>
+              <Button data-testid="backtest-add-entry-condition" type="button" variant="outline" className="rounded-full" onClick={() => addCondition(setEntry)}>
+                Add entry
+              </Button>
+            </div>
+            <div className="space-y-3">
+              {entry.map((c, idx) => (
+                <ConditionEditor
+                  key={idx}
+                  idx={idx}
+                  value={c}
+                  testPrefix="backtest-entry"
+                  onChange={(next) => setEntry((prev) => prev.map((p, i) => (i === idx ? next : p)))}
+                  onRemove={() => setEntry((prev) => prev.filter((_, i) => i !== idx))}
+                />
+              ))}
+              {entry.length === 0 ? (
+                <div data-testid="backtest-entry-empty" className="text-sm text-muted-foreground">
+                  Add at least one entry condition.
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div data-testid="backtest-exit-title" className="text-sm font-medium">Exit conditions (AND)</div>
+                <div data-testid="backtest-exit-subtitle" className="text-xs text-muted-foreground">All must be true to exit.</div>
+              </div>
+              <Button data-testid="backtest-add-exit-condition" type="button" variant="outline" className="rounded-full" onClick={() => addCondition(setExit)}>
+                Add exit
+              </Button>
+            </div>
+            <div className="space-y-3">
+              {exit.map((c, idx) => (
+                <ConditionEditor
+                  key={idx}
+                  idx={idx}
+                  value={c}
+                  testPrefix="backtest-exit"
+                  onChange={(next) => setExit((prev) => prev.map((p, i) => (i === idx ? next : p)))}
+                  onRemove={() => setExit((prev) => prev.filter((_, i) => i !== idx))}
+                />
+              ))}
+              {exit.length === 0 ? (
+                <div data-testid="backtest-exit-empty" className="text-sm text-muted-foreground">
+                  Add at least one exit condition.
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div data-testid="backtest-mvp-note" className="rounded-2xl border bg-card/60 p-4 text-sm text-muted-foreground">
+            MVP constraints: long-only, execute at next bar open, and only candle-derived metrics.
+          </div>
+
+          {error ? (
+            <div data-testid="backtest-error" className="text-sm text-destructive">
+              {error}
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      {run ? (
+        <div data-testid="backtest-results" className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <Card data-testid="backtest-summary-card" className="rounded-2xl lg:col-span-1">
+            <CardHeader>
+              <CardTitle data-testid="backtest-summary-title" className="text-base">Summary</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div data-testid="backtest-summary-totalreturn-label" className="text-sm text-muted-foreground">Total return</div>
+                <div data-testid="backtest-summary-totalreturn" className="text-sm font-medium">{fmt(run.summary.total_return_pct, 2)}%</div>
+              </div>
+              <div className="flex items-center justify-between">
+                <div data-testid="backtest-summary-maxdd-label" className="text-sm text-muted-foreground">Max drawdown</div>
+                <div data-testid="backtest-summary-maxdd" className="text-sm font-medium">{fmt(run.summary.max_drawdown_pct, 2)}%</div>
+              </div>
+              <div className="flex items-center justify-between">
+                <div data-testid="backtest-summary-winrate-label" className="text-sm text-muted-foreground">Win rate</div>
+                <div data-testid="backtest-summary-winrate" className="text-sm font-medium">{fmt(run.summary.win_rate_pct, 1)}%</div>
+              </div>
+              <div className="flex items-center justify-between">
+                <div data-testid="backtest-summary-trades-label" className="text-sm text-muted-foreground">Trades</div>
+                <div data-testid="backtest-summary-trades" className="text-sm font-medium">{run.summary.trades}</div>
+              </div>
+              <div className="pt-2">
+                <Badge data-testid="backtest-summary-runid" variant="secondary" className="rounded-full">
+                  Run {run.id.slice(0, 8)}…
+                </Badge>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card data-testid="backtest-equity-card" className="rounded-2xl lg:col-span-2">
+            <CardHeader>
+              <CardTitle data-testid="backtest-equity-title" className="text-base">Equity curve</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div data-testid="backtest-equity-chart" className="h-[260px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={chartData} margin={{ left: 6, right: 6, top: 10, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="tmxEq" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="hsl(var(--chart-4))" stopOpacity={0.35} />
+                        <stop offset="95%" stopColor="hsl(var(--chart-4))" stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
+                    <XAxis hide dataKey="t" />
+                    <YAxis hide />
+                    <Tooltip
+                      contentStyle={{ background: "hsl(var(--popover))", borderRadius: 12, border: "1px solid hsl(var(--border))" }}
+                      labelFormatter={() => ""}
+                      formatter={(val) => [fmt(val, 2), "equity"]}
+                    />
+                    <Area type="monotone" dataKey="equity" stroke="hsl(var(--chart-4))" strokeWidth={2} fill="url(#tmxEq)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+              <div data-testid="backtest-equity-hint" className="mt-2 text-xs text-muted-foreground">
+                Strategy executes at next bar open. Fee/slippage are applied.
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card data-testid="backtest-trades-card" className="rounded-2xl lg:col-span-3">
+            <CardHeader>
+              <CardTitle data-testid="backtest-trades-title" className="text-base">Trades</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="rounded-xl border overflow-hidden">
+                <Table data-testid="backtest-trades-table">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead data-testid="backtest-trades-head-entry">Entry</TableHead>
+                      <TableHead data-testid="backtest-trades-head-exit">Exit</TableHead>
+                      <TableHead data-testid="backtest-trades-head-ret">Return</TableHead>
+                      <TableHead data-testid="backtest-trades-head-pnl">PnL</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {run.trades.length ? (
+                      run.trades.slice(0, 200).map((t, i) => (
+                        <TableRow data-testid={`backtest-trade-row-${i}`} key={i}>
+                          <TableCell data-testid={`backtest-trade-entry-${i}`} className="text-xs">
+                            {t.entry_time} @ {fmt(t.entry_price, 2)}
+                          </TableCell>
+                          <TableCell data-testid={`backtest-trade-exit-${i}`} className="text-xs">
+                            {t.exit_time} @ {fmt(t.exit_price, 2)}
+                          </TableCell>
+                          <TableCell data-testid={`backtest-trade-return-${i}`} className="text-xs">
+                            {fmt(t.return_pct, 2)}%
+                          </TableCell>
+                          <TableCell data-testid={`backtest-trade-pnl-${i}`} className="text-xs">
+                            {fmt(t.pnl, 2)}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell data-testid="backtest-trades-empty" colSpan={4} className="text-sm text-muted-foreground">
+                          No trades triggered in the selected window.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
+        <Card data-testid="backtest-results-empty" className="rounded-2xl">
+          <CardContent className="py-8 text-sm text-muted-foreground">
+            Run a backtest to see results.
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}

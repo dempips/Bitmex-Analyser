@@ -1,88 +1,892 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 import os
-import logging
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
 import uuid
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Literal
+
+import jwt
+import requests
+from bson import ObjectId
+from dotenv import load_dotenv
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from motor.motor_asyncio import AsyncIOMotorClient
+from passlib.context import CryptContext
+from pydantic import BaseModel, Field, ConfigDict
+from starlette.middleware.cors import CORSMiddleware
 
 
+# -----------------------------
+# Env + DB
+# -----------------------------
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
+mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[os.environ["DB_NAME"]]
 
-# Create the main app without a prefix
+JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-me")
+JWT_ALG = "HS256"
+JWT_EXPIRES_HOURS = int(os.environ.get("JWT_EXPIRES_HOURS", "168"))  # 7 days
+
+BITMEX_BASE_URL = "https://www.bitmex.com/api/v1"
+
+
+# -----------------------------
+# App
+# -----------------------------
 app = FastAPI()
-
-# Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
-
-
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class StatusCheckCreate(BaseModel):
-    client_name: str
-
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root():
-    return {"message": "Hello World"}
-
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
-
-# Include the router in the main app
-app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+# -----------------------------
+# Utilities
+# -----------------------------
+class PyObjectId(ObjectId):
+    @classmethod
+    def __get_validators__(cls):
+        yield cls.validate
+
+    @classmethod
+    def validate(cls, v):
+        if isinstance(v, ObjectId):
+            return v
+        if not ObjectId.is_valid(v):
+            raise ValueError("Invalid ObjectId")
+        return ObjectId(v)
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    return pwd_context.verify(password, hashed)
+
+
+security = HTTPBearer()
+
+
+def create_access_token(user_id: str, email: str) -> str:
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "iat": int(now_utc().timestamp()),
+        "exp": int((now_utc() + timedelta(hours=JWT_EXPIRES_HOURS)).timestamp()),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+
+async def get_current_user(
+    creds: HTTPAuthorizationCredentials = Depends(security),
+) -> Dict[str, Any]:
+    token = creds.credentials
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        user = await db.users.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        return user
+    except jwt.ExpiredSignatureError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired") from e
+    except jwt.InvalidTokenError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from e
+
+
+def mongo_to_user_out(user: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": str(user["_id"]),
+        "email": user["email"],
+        "created_at": user.get("created_at"),
+    }
+
+
+def op_to_fn(op: str):
+    # for numeric comparisons
+    if op == ">":
+        return lambda a, b: a > b
+    if op == ">=":
+        return lambda a, b: a >= b
+    if op == "<":
+        return lambda a, b: a < b
+    if op == "<=":
+        return lambda a, b: a <= b
+    if op == "==":
+        return lambda a, b: a == b
+    raise ValueError("Unsupported operator")
+
+
+# -----------------------------
+# Pydantic Models
+# -----------------------------
+class HealthResponse(BaseModel):
+    ok: bool
+
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user: Dict[str, Any]
+
+
+class MeResponse(BaseModel):
+    user: Dict[str, Any]
+
+
+class SymbolItem(BaseModel):
+    symbol: str
+    typ: Optional[str] = None
+    state: Optional[str] = None
+    listing: Optional[str] = None
+
+
+class Candle(BaseModel):
+    timestamp: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+class AnalyticsSnapshotRequest(BaseModel):
+    symbol: str
+    depth: int = 50
+    bands_bps: List[int] = Field(default_factory=lambda: [10, 25, 100])
+
+
+class BandDepth(BaseModel):
+    band_bps: int
+    bid_depth: float
+    ask_depth: float
+    obi: float
+    weighted_obi: float
+
+
+class AnalyticsSnapshotResponse(BaseModel):
+    symbol: str
+    ts: str
+    best_bid: float
+    best_ask: float
+    mid: float
+    spread: float
+    bands: List[BandDepth]
+
+
+class FlowResponse(BaseModel):
+    symbol: str
+    ts: str
+    minutes: int
+    buy_volume: float
+    sell_volume: float
+    aggressive_imbalance: float
+    cvd: float
+    price_change: float
+    absorption_ratio: float
+
+
+ConditionMetric = Literal["close", "return_1", "sma", "ema", "volatility"]
+
+
+class StrategyCondition(BaseModel):
+    metric: ConditionMetric
+    period: Optional[int] = None  # for sma/ema/volatility
+    operator: Literal[">", ">=", "<", "<=", "=="]
+    value: float
+
+
+class StrategyCreate(BaseModel):
+    name: str
+    symbol: str
+    entry_conditions: List[StrategyCondition]
+    exit_conditions: List[StrategyCondition]
+    fee_bps: float = 7.5
+    slippage_bps: float = 2.0
+
+
+class StrategyOut(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    user_id: str
+    name: str
+    symbol: str
+    entry_conditions: List[StrategyCondition]
+    exit_conditions: List[StrategyCondition]
+    fee_bps: float
+    slippage_bps: float
+    created_at: str
+
+
+class BacktestRunRequest(BaseModel):
+    symbol: str
+    start: str  # ISO
+    end: str  # ISO
+    strategy: StrategyCreate
+    initial_capital: float = 10000.0
+
+
+class BacktestTrade(BaseModel):
+    entry_time: str
+    entry_price: float
+    exit_time: str
+    exit_price: float
+    pnl: float
+    return_pct: float
+
+
+class BacktestSummary(BaseModel):
+    total_return_pct: float
+    max_drawdown_pct: float
+    win_rate_pct: float
+    trades: int
+
+
+class BacktestRunResponse(BaseModel):
+    id: str
+    created_at: str
+    symbol: str
+    start: str
+    end: str
+    summary: BacktestSummary
+    equity_curve: List[Dict[str, Any]]
+    trades: List[BacktestTrade]
+
+
+# -----------------------------
+# BitMEX REST helpers
+# -----------------------------
+
+def bitmex_get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    url = f"{BITMEX_BASE_URL}{path}"
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        if resp.status_code >= 400:
+            raise HTTPException(
+                status_code=resp.status_code,
+                detail=f"BitMEX error: {resp.text[:200]}"
+            )
+        return resp.json()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail="Failed to reach BitMEX") from e
+
+
+def parse_iso(s: str) -> datetime:
+    # accepts Z or +00:00
+    s2 = s.replace("Z", "+00:00")
+    return datetime.fromisoformat(s2)
+
+
+# -----------------------------
+# Indicators (candle-based)
+# -----------------------------
+
+def sma(values: List[float], period: int) -> List[Optional[float]]:
+    out: List[Optional[float]] = [None] * len(values)
+    if period <= 0:
+        return out
+    running = 0.0
+    for i, v in enumerate(values):
+        running += v
+        if i >= period:
+            running -= values[i - period]
+        if i >= period - 1:
+            out[i] = running / period
+    return out
+
+
+def ema(values: List[float], period: int) -> List[Optional[float]]:
+    out: List[Optional[float]] = [None] * len(values)
+    if period <= 0 or not values:
+        return out
+    k = 2 / (period + 1)
+    ema_val: Optional[float] = None
+    for i, v in enumerate(values):
+        if ema_val is None:
+            ema_val = v
+        else:
+            ema_val = v * k + ema_val * (1 - k)
+        out[i] = ema_val if i >= period - 1 else None
+    return out
+
+
+def returns_1(values: List[float]) -> List[Optional[float]]:
+    out: List[Optional[float]] = [None] * len(values)
+    for i in range(1, len(values)):
+        prev = values[i - 1]
+        out[i] = (values[i] / prev - 1.0) if prev else None
+    return out
+
+
+def rolling_std(values: List[Optional[float]], period: int) -> List[Optional[float]]:
+    out: List[Optional[float]] = [None] * len(values)
+    if period <= 1:
+        return out
+    window: List[float] = []
+    for i, v in enumerate(values):
+        if v is None:
+            window.append(float("nan"))
+        else:
+            window.append(float(v))
+        if len(window) > period:
+            window.pop(0)
+        if len(window) == period and all(not (x != x) for x in window):  # no NaNs
+            mean = sum(window) / period
+            var = sum((x - mean) ** 2 for x in window) / period
+            out[i] = var ** 0.5
+    return out
+
+
+def compute_series(candles: List[Candle]) -> Dict[str, Any]:
+    closes = [c.close for c in candles]
+    ret1 = returns_1(closes)
+    sma10 = sma(closes, 10)
+    sma20 = sma(closes, 20)
+    sma50 = sma(closes, 50)
+    ema10 = ema(closes, 10)
+    ema20 = ema(closes, 20)
+    ema50 = ema(closes, 50)
+    vol10 = rolling_std(ret1, 10)
+    vol20 = rolling_std(ret1, 20)
+    vol50 = rolling_std(ret1, 50)
+    return {
+        "close": closes,
+        "return_1": ret1,
+        "sma": {10: sma10, 20: sma20, 50: sma50},
+        "ema": {10: ema10, 20: ema20, 50: ema50},
+        "volatility": {10: vol10, 20: vol20, 50: vol50},
+    }
+
+
+def eval_condition(series: Dict[str, Any], idx: int, cond: StrategyCondition) -> bool:
+    op = op_to_fn(cond.operator)
+    if cond.metric == "close":
+        v = series["close"][idx]
+    elif cond.metric == "return_1":
+        v = series["return_1"][idx]
+    elif cond.metric in ("sma", "ema", "volatility"):
+        if not cond.period or cond.period not in (10, 20, 50):
+            return False
+        v = series[cond.metric][cond.period][idx]
+    else:
+        return False
+
+    if v is None:
+        return False
+    return op(float(v), float(cond.value))
+
+
+# -----------------------------
+# Routes
+# -----------------------------
+@api_router.get("/", tags=["system"])
+async def root():
+    return {"message": "TradeMetryx API"}
+
+
+@api_router.get("/health", response_model=HealthResponse, tags=["system"])
+async def health():
+    return HealthResponse(ok=True)
+
+
+# -------- Auth --------
+@api_router.post("/auth/register", response_model=AuthResponse, tags=["auth"])
+async def register(payload: RegisterRequest):
+    email = payload.email.strip().lower()
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    user_doc = {
+        "email": email,
+        "password_hash": hash_password(payload.password),
+        "created_at": iso(now_utc()),
+    }
+    res = await db.users.insert_one(user_doc)
+    user_id = str(res.inserted_id)
+    token = create_access_token(user_id=user_id, email=email)
+    return AuthResponse(token=token, user=mongo_to_user_out({"_id": res.inserted_id, **user_doc}))
+
+
+@api_router.post("/auth/login", response_model=AuthResponse, tags=["auth"])
+async def login(payload: LoginRequest):
+    email = payload.email.strip().lower()
+    user = await db.users.find_one({"email": email})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not verify_password(payload.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    token = create_access_token(user_id=str(user["_id"]), email=email)
+    return AuthResponse(token=token, user=mongo_to_user_out(user))
+
+
+@api_router.get("/auth/me", response_model=MeResponse, tags=["auth"])
+async def me(user: Dict[str, Any] = Depends(get_current_user)):
+    return MeResponse(user=mongo_to_user_out(user))
+
+
+# -------- BitMEX data --------
+@api_router.get("/bitmex/symbols", response_model=List[SymbolItem], tags=["bitmex"])
+async def bitmex_symbols():
+    data = bitmex_get("/instrument/active", params=None)
+    out: List[SymbolItem] = []
+    for row in data:
+        sym = row.get("symbol")
+        if not sym:
+            continue
+        out.append(
+            SymbolItem(
+                symbol=sym,
+                typ=row.get("typ"),
+                state=row.get("state"),
+                listing=row.get("listing"),
+            )
+        )
+    # sort symbols (XBTUSD etc.)
+    out.sort(key=lambda x: x.symbol)
+    return out
+
+
+@api_router.get("/bitmex/candles", response_model=List[Candle], tags=["bitmex"])
+async def bitmex_candles(symbol: str, start: str, end: str):
+    start_dt = parse_iso(start)
+    end_dt = parse_iso(end)
+    if end_dt <= start_dt:
+        raise HTTPException(status_code=400, detail="end must be after start")
+
+    # BitMEX bucketed supports count; we keep requests small for MVP
+    # We'll pull up to ~2000 minutes per call; if bigger, paginate.
+    all_rows: List[Dict[str, Any]] = []
+    cursor = start_dt
+    while cursor < end_dt:
+        chunk_end = min(cursor + timedelta(minutes=2000), end_dt)
+        params = {
+            "symbol": symbol,
+            "binSize": "1m",
+            "partial": "false",
+            "reverse": "false",
+            "startTime": iso(cursor),
+            "endTime": iso(chunk_end),
+            "count": 2000,
+        }
+        rows = bitmex_get("/trade/bucketed", params=params)
+        if not isinstance(rows, list):
+            break
+        all_rows.extend(rows)
+        if len(rows) < 10 and chunk_end < end_dt:
+            # very sparse; still move forward
+            cursor = chunk_end
+        elif rows:
+            # next cursor: last timestamp + 1m
+            last_ts = parse_iso(rows[-1]["timestamp"]) + timedelta(minutes=1)
+            cursor = max(last_ts, chunk_end)
+        else:
+            cursor = chunk_end
+
+        if len(all_rows) > 20000:
+            raise HTTPException(status_code=400, detail="Requested range too large for MVP")
+
+    candles: List[Candle] = []
+    for r in all_rows:
+        if not r.get("timestamp"):
+            continue
+        # Some bucketed fields are None at times
+        candles.append(
+            Candle(
+                timestamp=r["timestamp"],
+                open=float(r.get("open") or 0),
+                high=float(r.get("high") or 0),
+                low=float(r.get("low") or 0),
+                close=float(r.get("close") or 0),
+                volume=float(r.get("volume") or 0),
+            )
+        )
+    return candles
+
+
+def compute_orderbook_metrics(
+    l2: List[Dict[str, Any]],
+    bands_bps: List[int],
+) -> Dict[str, Any]:
+    # L2 returns rows with {symbol,id,side,size,price}
+    bids = [r for r in l2 if r.get("side") == "Buy" and r.get("price") is not None]
+    asks = [r for r in l2 if r.get("side") == "Sell" and r.get("price") is not None]
+    if not bids or not asks:
+        raise HTTPException(status_code=502, detail="BitMEX order book missing sides")
+
+    best_bid = max(float(r["price"]) for r in bids)
+    best_ask = min(float(r["price"]) for r in asks)
+    mid = (best_bid + best_ask) / 2
+    spread = best_ask - best_bid
+
+    band_out: List[BandDepth] = []
+    for bps in bands_bps:
+        band = mid * (bps / 10000)
+        bid_depth = 0.0
+        ask_depth = 0.0
+        w_bid = 0.0
+        w_ask = 0.0
+
+        for r in bids:
+            p = float(r["price"])
+            if p >= mid - band:
+                sz = float(r.get("size") or 0)
+                bid_depth += sz
+                dist = max(mid - p, 0.0)
+                w = 1.0 / (1.0 + (dist / (band + 1e-9)))
+                w_bid += sz * w
+        for r in asks:
+            p = float(r["price"])
+            if p <= mid + band:
+                sz = float(r.get("size") or 0)
+                ask_depth += sz
+                dist = max(p - mid, 0.0)
+                w = 1.0 / (1.0 + (dist / (band + 1e-9)))
+                w_ask += sz * w
+
+        denom = (bid_depth + ask_depth) or 1.0
+        obi = (bid_depth - ask_depth) / denom
+
+        w_denom = (w_bid + w_ask) or 1.0
+        weighted_obi = (w_bid - w_ask) / w_denom
+
+        band_out.append(
+            BandDepth(
+                band_bps=bps,
+                bid_depth=bid_depth,
+                ask_depth=ask_depth,
+                obi=obi,
+                weighted_obi=weighted_obi,
+            )
+        )
+
+    return {
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "mid": mid,
+        "spread": spread,
+        "bands": band_out,
+    }
+
+
+@api_router.get("/bitmex/analytics/snapshot", response_model=AnalyticsSnapshotResponse, tags=["analytics"])
+async def analytics_snapshot(symbol: str, depth: int = 50, bands_bps: str = "10,25,100"):
+    try:
+        bands = [int(x.strip()) for x in bands_bps.split(",") if x.strip()]
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid bands_bps") from e
+
+    l2 = bitmex_get("/orderBook/L2", params={"symbol": symbol, "depth": depth})
+    metrics = compute_orderbook_metrics(l2=l2, bands_bps=bands)
+    return AnalyticsSnapshotResponse(
+        symbol=symbol,
+        ts=iso(now_utc()),
+        best_bid=metrics["best_bid"],
+        best_ask=metrics["best_ask"],
+        mid=metrics["mid"],
+        spread=metrics["spread"],
+        bands=metrics["bands"],
+    )
+
+
+@api_router.get("/bitmex/analytics/flow", response_model=FlowResponse, tags=["analytics"])
+async def analytics_flow(symbol: str, minutes: int = 5):
+    minutes = max(1, min(minutes, 60))
+    # fetch latest trades
+    count = min(1000, minutes * 200)  # heuristic
+    trades = bitmex_get(
+        "/trade",
+        params={
+            "symbol": symbol,
+            "count": count,
+            "reverse": "true",
+        },
+    )
+
+    if not isinstance(trades, list) or not trades:
+        raise HTTPException(status_code=502, detail="No trades from BitMEX")
+
+    end_ts = parse_iso(trades[0]["timestamp"])
+    start_ts = end_ts - timedelta(minutes=minutes)
+    window = [t for t in trades if parse_iso(t["timestamp"]) >= start_ts]
+    window = list(reversed(window))  # chronological
+
+    if len(window) < 2:
+        raise HTTPException(status_code=502, detail="Not enough trades in window")
+
+    buy_vol = 0.0
+    sell_vol = 0.0
+    cvd = 0.0
+    first_price = float(window[0].get("price") or 0)
+    last_price = float(window[-1].get("price") or 0)
+
+    for t in window:
+        sz = float(t.get("size") or 0)
+        side = t.get("side")
+        if side == "Buy":
+            buy_vol += sz
+            cvd += sz
+        elif side == "Sell":
+            sell_vol += sz
+            cvd -= sz
+
+    total = buy_vol + sell_vol
+    aggressive_imbalance = ((buy_vol - sell_vol) / total) if total else 0.0
+    price_change = (last_price - first_price) if first_price else 0.0
+
+    # absorption proxy: how much aggressive volume is required per unit price change
+    # If price_change is small, absorption ratio will be high.
+    absorption_ratio = (total / (abs(price_change) + 1e-9))
+
+    return FlowResponse(
+        symbol=symbol,
+        ts=iso(now_utc()),
+        minutes=minutes,
+        buy_volume=buy_vol,
+        sell_volume=sell_vol,
+        aggressive_imbalance=aggressive_imbalance,
+        cvd=cvd,
+        price_change=price_change,
+        absorption_ratio=absorption_ratio,
+    )
+
+
+# -------- Strategy CRUD --------
+@api_router.post("/strategies", response_model=StrategyOut, tags=["strategies"])
+async def create_strategy(payload: StrategyCreate, user: Dict[str, Any] = Depends(get_current_user)):
+    doc = {
+        "user_id": str(user["_id"]),
+        "name": payload.name,
+        "symbol": payload.symbol,
+        "entry_conditions": [c.model_dump() for c in payload.entry_conditions],
+        "exit_conditions": [c.model_dump() for c in payload.exit_conditions],
+        "fee_bps": payload.fee_bps,
+        "slippage_bps": payload.slippage_bps,
+        "created_at": iso(now_utc()),
+    }
+    res = await db.strategies.insert_one(doc)
+    return StrategyOut(id=str(res.inserted_id), **doc)
+
+
+@api_router.get("/strategies", response_model=List[StrategyOut], tags=["strategies"])
+async def list_strategies(user: Dict[str, Any] = Depends(get_current_user)):
+    cur = db.strategies.find({"user_id": str(user["_id"])}, {"_id": 1, "user_id": 1, "name": 1, "symbol": 1, "entry_conditions": 1, "exit_conditions": 1, "fee_bps": 1, "slippage_bps": 1, "created_at": 1})
+    docs = await cur.sort("created_at", -1).to_list(200)
+    out: List[StrategyOut] = []
+    for d in docs:
+        d["id"] = str(d.pop("_id"))
+        out.append(StrategyOut(**d))
+    return out
+
+
+@api_router.get("/strategies/{strategy_id}", response_model=StrategyOut, tags=["strategies"])
+async def get_strategy(strategy_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    if not ObjectId.is_valid(strategy_id):
+        raise HTTPException(status_code=400, detail="Invalid strategy id")
+    d = await db.strategies.find_one({"_id": ObjectId(strategy_id), "user_id": str(user["_id"])})
+    if not d:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    d["id"] = str(d.pop("_id"))
+    return StrategyOut(**d)
+
+
+@api_router.delete("/strategies/{strategy_id}", tags=["strategies"])
+async def delete_strategy(strategy_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    if not ObjectId.is_valid(strategy_id):
+        raise HTTPException(status_code=400, detail="Invalid strategy id")
+    res = await db.strategies.delete_one({"_id": ObjectId(strategy_id), "user_id": str(user["_id"])})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    return {"ok": True}
+
+
+# -------- Backtesting --------
+
+def compute_drawdown(equity: List[float]) -> float:
+    peak = -1e18
+    max_dd = 0.0
+    for v in equity:
+        if v > peak:
+            peak = v
+        dd = (peak - v) / peak if peak > 0 else 0.0
+        max_dd = max(max_dd, dd)
+    return max_dd
+
+
+@api_router.post("/backtests/run", response_model=BacktestRunResponse, tags=["backtests"])
+async def run_backtest(payload: BacktestRunRequest, user: Dict[str, Any] = Depends(get_current_user)):
+    # Pull candles
+    candles = await bitmex_candles(symbol=payload.symbol, start=payload.start, end=payload.end)
+    if len(candles) < 200:
+        raise HTTPException(status_code=400, detail="Not enough candles for backtest (need at least ~200 minutes)")
+
+    series = compute_series(candles)
+
+    fee = payload.strategy.fee_bps / 10000.0
+    slip = payload.strategy.slippage_bps / 10000.0
+
+    in_pos = False
+    entry_price = 0.0
+    entry_time = ""
+
+    equity = payload.initial_capital
+    equity_curve: List[Dict[str, Any]] = []
+    trades: List[BacktestTrade] = []
+
+    # We simulate decision at close of bar i, execute at open of i+1
+    for i in range(0, len(candles) - 1):
+        ts = candles[i].timestamp
+        px = candles[i].close
+
+        # record equity at close
+        equity_curve.append({"t": ts, "equity": equity, "price": px})
+
+        if not in_pos:
+            if payload.strategy.entry_conditions and all(eval_condition(series, i, c) for c in payload.strategy.entry_conditions):
+                nxt = candles[i + 1]
+                entry_time = nxt.timestamp
+                entry_price = nxt.open * (1 + slip)
+                # entry fee
+                equity *= (1 - fee)
+                in_pos = True
+        else:
+            if payload.strategy.exit_conditions and all(eval_condition(series, i, c) for c in payload.strategy.exit_conditions):
+                nxt = candles[i + 1]
+                exit_time = nxt.timestamp
+                exit_price = nxt.open * (1 - slip)
+                # exit fee
+                equity *= (1 - fee)
+
+                ret = (exit_price / entry_price) - 1.0 if entry_price else 0.0
+                pnl = equity * 0.0  # placeholder; we apply returns multiplicatively below
+
+                # Apply PnL multiplicatively (long only, fully invested)
+                before = equity
+                equity = equity * (1 + ret)
+                pnl = equity - before
+
+                trades.append(
+                    BacktestTrade(
+                        entry_time=entry_time,
+                        entry_price=entry_price,
+                        exit_time=exit_time,
+                        exit_price=exit_price,
+                        pnl=pnl,
+                        return_pct=ret * 100,
+                    )
+                )
+                in_pos = False
+
+    # final point
+    equity_curve.append({"t": candles[-1].timestamp, "equity": equity, "price": candles[-1].close})
+
+    total_return = (equity / payload.initial_capital - 1.0) if payload.initial_capital else 0.0
+    wins = sum(1 for t in trades if t.pnl > 0)
+    win_rate = (wins / len(trades)) if trades else 0.0
+    dd = compute_drawdown([p["equity"] for p in equity_curve])
+
+    summary = BacktestSummary(
+        total_return_pct=total_return * 100,
+        max_drawdown_pct=dd * 100,
+        win_rate_pct=win_rate * 100,
+        trades=len(trades),
+    )
+
+    run_doc = {
+        "user_id": str(user["_id"]),
+        "created_at": iso(now_utc()),
+        "symbol": payload.symbol,
+        "start": payload.start,
+        "end": payload.end,
+        "strategy": payload.strategy.model_dump(),
+        "initial_capital": payload.initial_capital,
+        "summary": summary.model_dump(),
+        "equity_curve": equity_curve,
+        "trades": [t.model_dump() for t in trades],
+    }
+
+    res = await db.backtest_runs.insert_one(run_doc)
+
+    return BacktestRunResponse(
+        id=str(res.inserted_id),
+        created_at=run_doc["created_at"],
+        symbol=run_doc["symbol"],
+        start=run_doc["start"],
+        end=run_doc["end"],
+        summary=summary,
+        equity_curve=equity_curve,
+        trades=trades,
+    )
+
+
+@api_router.get("/backtests", tags=["backtests"])
+async def list_backtests(user: Dict[str, Any] = Depends(get_current_user)):
+    cur = db.backtest_runs.find(
+        {"user_id": str(user["_id"])},
+        {"_id": 1, "created_at": 1, "symbol": 1, "start": 1, "end": 1, "summary": 1},
+    )
+    docs = await cur.sort("created_at", -1).to_list(200)
+    for d in docs:
+        d["id"] = str(d.pop("_id"))
+    return docs
+
+
+@api_router.get("/backtests/{run_id}", tags=["backtests"])
+async def get_backtest(run_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    if not ObjectId.is_valid(run_id):
+        raise HTTPException(status_code=400, detail="Invalid run id")
+    d = await db.backtest_runs.find_one({"_id": ObjectId(run_id), "user_id": str(user["_id"])}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Backtest not found")
+    d["id"] = run_id
+    return d
+
+
+app.include_router(api_router)
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
