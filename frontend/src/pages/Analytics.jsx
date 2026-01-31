@@ -291,8 +291,17 @@ export default function Analytics() {
               Reconnect
             </Button>
 
+            <Button
+              data-testid="analytics-toggle-polling-button"
+              variant={pollingEnabled ? "secondary" : "outline"}
+              className="rounded-full"
+              onClick={() => setPollingEnabled((v) => !v)}
+            >
+              {pollingEnabled ? "Polling: ON" : "Polling: OFF"}
+            </Button>
+
             <Button data-testid="analytics-refresh-button" className="rounded-full" onClick={refreshAll} disabled={busy}>
-              {busy ? "Refreshing…" : "Refresh (polling)"}
+              {busy ? "Refreshing…" : "Refresh now"}
             </Button>
           </div>
         </div>
