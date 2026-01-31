@@ -191,7 +191,6 @@ export default function Analytics() {
 
   useEffect(() => {
     loadSymbols().catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
