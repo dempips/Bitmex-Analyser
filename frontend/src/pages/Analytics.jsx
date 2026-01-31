@@ -176,6 +176,22 @@ export default function Analytics() {
 
       const [snapRes, flowRes, depthRes, flowSeriesRes] = coreSettled;
 
+      // If live feed has an orderbook snapshot, use it for the top-of-page market values.
+      if (live.orderbook) {
+        setSnapshot((prev) => {
+          const bands = prev?.bands || [];
+          return {
+            symbol: live.orderbook.symbol,
+            ts: live.orderbook.ts,
+            best_bid: live.orderbook.best_bid,
+            best_ask: live.orderbook.best_ask,
+            mid: live.orderbook.mid,
+            spread: live.orderbook.spread,
+            bands,
+          };
+        });
+      }
+
       if (snapRes.status === "fulfilled") setSnapshot(snapRes.value.data);
       if (flowRes.status === "fulfilled") setFlow(flowRes.value.data);
       if (depthRes.status === "fulfilled") setDepthData(depthRes.value.data);
