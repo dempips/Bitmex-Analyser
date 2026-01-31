@@ -949,34 +949,63 @@ async def bitmex_funding(symbol: str, start: str, end: str):
 
 @api_router.get("/bitmex/open-interest", response_model=OpenInterestResponse, tags=["bitmex"])
 async def bitmex_open_interest(symbol: str, start: str, end: str):
+    # BitMEX may not expose the historical /openInterest table on mainnet.
+    # Fallback: derive a time series from instrument snapshots (openInterest field).
     start_dt = parse_iso(start)
     end_dt = parse_iso(end)
     if end_dt <= start_dt:
         raise HTTPException(status_code=400, detail="end must be after start")
 
-    rows = bitmex_get(
-        "/openInterest",
-        params={
-            "symbol": symbol,
-            "startTime": iso(start_dt),
-            "endTime": iso(end_dt),
-            "count": 500,
-            "reverse": "false",
-        },
-    )
+    # sample interval based on requested range
+    total_minutes = max(1, int((end_dt - start_dt).total_seconds() / 60))
+    if total_minutes <= 120:
+        step = 5
+    elif total_minutes <= 24 * 60:
+        step = 15
+    else:
+        step = 60
 
-    if not isinstance(rows, list):
-        raise HTTPException(status_code=502, detail="Unexpected openInterest response")
+    points_raw: List[Tuple[datetime, float]] = []
+
+    cursor = floor_to_minute(start_dt)
+    while cursor <= end_dt:
+        # query instrument at/around timestamp
+        rows = bitmex_get(
+            "/instrument",
+            params={
+                "symbol": symbol,
+                "count": 1,
+                "reverse": "true",
+                "startTime": iso(cursor),
+                "endTime": iso(cursor + timedelta(minutes=step)),
+            },
+        )
+        if isinstance(rows, list) and rows:
+            r = rows[0]
+            t = r.get("timestamp")
+            oi = r.get("openInterest")
+            if t is not None and oi is not None:
+                points_raw.append((parse_iso(t), float(oi)))
+
+        cursor = cursor + timedelta(minutes=step)
+        if len(points_raw) > 600:
+            break
+
+    # dedupe & sort
+    points_raw.sort(key=lambda x: x[0])
+    dedup: List[Tuple[datetime, float]] = []
+    last_t: Optional[datetime] = None
+    for t, oi in points_raw:
+        if last_t and t == last_t:
+            continue
+        dedup.append((t, oi))
+        last_t = t
 
     prev: Optional[float] = None
     points: List[OpenInterestPoint] = []
-    for r in rows:
-        t = r.get("timestamp")
-        if not t:
-            continue
-        oi = float(r.get("openInterest") or 0)
+    for t, oi in dedup:
         d = oi - prev if prev is not None else 0.0
-        points.append(OpenInterestPoint(t=t, open_interest=oi, delta=d))
+        points.append(OpenInterestPoint(t=iso(t), open_interest=oi, delta=d))
         prev = oi
 
     return OpenInterestResponse(symbol=symbol, ts=iso(now_utc()), points=points)
