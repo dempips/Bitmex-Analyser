@@ -33,6 +33,7 @@ function colorForHeat(v) {
 }
 
 export default function Analytics() {
+  const live = useLive();
   const [symbols, setSymbols] = useState([]);
   const [symbol, setSymbol] = useState("XBTUSD");
 
