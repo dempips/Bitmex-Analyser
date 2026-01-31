@@ -96,15 +96,24 @@ export default function Analytics() {
     return liquidations.points.map((p) => ({ t: p.t, price: p.price, size: p.size, side: p.side }));
   }, [liquidations]);
 
+  const depthSeries = useMemo(() => {
+    if (!depthData?.bids?.length || !depthData?.asks?.length) return [];
+
+    const rows = [];
+    depthData.bids.forEach((p) => rows.push({ price: p.price, bidCum: p.cum_size, askCum: null }));
+    depthData.asks.forEach((p) => rows.push({ price: p.price, bidCum: null, askCum: p.cum_size }));
+
+    rows.sort((a, b) => a.price - b.price);
+    return rows;
+  }, [depthData]);
+
   const heatmap = useMemo(() => {
-    // Build a simple heatmap from orderbook levels (snapshot-like): x=side levels, y=bucketed prices
-    // For MVP visual learning: show top depth buckets as rows.
+    // Snapshot proxy: show cumulative depth intensity side-by-side.
     if (!depthData?.bids?.length || !depthData?.asks?.length) return null;
 
     const bidLevels = depthData.bids.slice(0, 40);
     const askLevels = depthData.asks.slice(0, 40);
 
-    // normalize cum size 0..1 in each side
     const bidMax = bidLevels[bidLevels.length - 1]?.cum_size || 1;
     const askMax = askLevels[askLevels.length - 1]?.cum_size || 1;
 
@@ -156,34 +165,44 @@ export default function Analytics() {
     const range = timeframeToRange();
 
     try {
-      const [snapRes, flowRes, depthRes, flowSeriesRes] = await Promise.all([
+      const coreSettled = await Promise.allSettled([
         api.get("/bitmex/analytics/snapshot", { params: { symbol, depth, bands_bps: bands } }),
         api.get("/bitmex/analytics/flow", { params: { symbol, minutes: Math.min(flowMinutes, 60) } }),
         api.get("/bitmex/orderbook/depth", { params: { symbol, depth } }),
         api.get("/bitmex/flow/timeseries", { params: { symbol, minutes: flowMinutes } }),
       ]);
 
-      setSnapshot(snapRes.data);
-      setFlow(flowRes.data);
-      setDepthData(depthRes.data);
-      setFlowSeries(flowSeriesRes.data);
+      const [snapRes, flowRes, depthRes, flowSeriesRes] = coreSettled;
 
-      const candlesRes = await api.get("/bitmex/candles", {
-        params: { symbol, start: range.start.toISOString(), end: range.end.toISOString() },
-      });
-      setPriceCandles(candlesRes.data.slice(-600));
+      if (snapRes.status === "fulfilled") setSnapshot(snapRes.value.data);
+      if (flowRes.status === "fulfilled") setFlow(flowRes.value.data);
+      if (depthRes.status === "fulfilled") setDepthData(depthRes.value.data);
+      if (flowSeriesRes.status === "fulfilled") setFlowSeries(flowSeriesRes.value.data);
 
-      // advanced panels
-      const [fundRes, oiRes, liqRes] = await Promise.all([
+      const candleSettled = await Promise.allSettled([
+        api.get("/bitmex/candles", {
+          params: { symbol, start: range.start.toISOString(), end: range.end.toISOString() },
+        }),
+      ]);
+      if (candleSettled[0].status === "fulfilled") {
+        setPriceCandles(candleSettled[0].value.data.slice(-600));
+      }
+
+      const advSettled = await Promise.allSettled([
         api.get("/bitmex/funding", { params: { symbol, start: range.start.toISOString(), end: range.end.toISOString() } }),
         api.get("/bitmex/open-interest", { params: { symbol, start: range.start.toISOString(), end: range.end.toISOString() } }),
         api.get("/bitmex/liquidations", { params: { symbol, minutes: liqMinutes } }),
       ]);
-      setFunding(fundRes.data);
-      setOpenInterest(oiRes.data);
-      setLiquidations(liqRes.data);
-    } catch (e) {
-      setError(e?.response?.data?.detail || "Failed to load analytics");
+
+      if (advSettled[0].status === "fulfilled") setFunding(advSettled[0].value.data);
+      if (advSettled[1].status === "fulfilled") setOpenInterest(advSettled[1].value.data);
+      if (advSettled[2].status === "fulfilled") setLiquidations(advSettled[2].value.data);
+
+      const firstErr = [...coreSettled, ...candleSettled, ...advSettled].find((r) => r.status === "rejected");
+      if (firstErr) {
+        const msg = firstErr?.reason?.response?.data?.detail || "One or more data panels failed to load";
+        setError(msg);
+      }
     } finally {
       setBusy(false);
     }
@@ -489,31 +508,17 @@ export default function Analytics() {
               <CardContent>
                 <div data-testid="analytics-depth-chart" className="h-[320px]">
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart margin={{ left: 8, right: 8, top: 10, bottom: 0 }}>
+                    <LineChart data={depthSeries} margin={{ left: 8, right: 8, top: 10, bottom: 0 }}>
                       <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="4 6" />
                       <XAxis type="number" dataKey="price" domain={["dataMin", "dataMax"]} tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }} />
                       <YAxis tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }} />
                       <Tooltip
                         contentStyle={{ background: "hsl(var(--popover))", borderRadius: 12, border: "1px solid hsl(var(--border))" }}
-                        formatter={(val) => [fmt(val, 0), "cum size"]}
+                        formatter={(val, name) => [fmt(val, 0), name]}
                         labelFormatter={(lab) => `price ${fmt(lab, 1)}`}
                       />
-                      <Line
-                        data={depthData?.bids || []}
-                        type="stepAfter"
-                        dataKey="cum_size"
-                        stroke="hsl(var(--chart-2))"
-                        strokeWidth={2}
-                        dot={false}
-                      />
-                      <Line
-                        data={depthData?.asks || []}
-                        type="stepAfter"
-                        dataKey="cum_size"
-                        stroke="hsl(var(--chart-3))"
-                        strokeWidth={2}
-                        dot={false}
-                      />
+                      <Line type="stepAfter" dataKey="bidCum" stroke="hsl(var(--chart-2))" strokeWidth={2} dot={false} />
+                      <Line type="stepAfter" dataKey="askCum" stroke="hsl(var(--chart-3))" strokeWidth={2} dot={false} />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
