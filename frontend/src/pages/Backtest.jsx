@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from "recharts";
 
 function fmt(n, digits = 2) {
   if (n === null || n === undefined) return "—";
@@ -109,6 +109,16 @@ function ConditionEditor({ idx, value, onChange, onRemove, testPrefix }) {
   );
 }
 
+function computeDrawdownSeries(equityCurve) {
+  let peak = -1e18;
+  return equityCurve.map((p) => {
+    const eq = Number(p.equity);
+    peak = Math.max(peak, eq);
+    const dd = peak > 0 ? (peak - eq) / peak : 0;
+    return { t: p.t, drawdown: -dd * 100 };
+  });
+}
+
 export default function Backtest() {
   const [symbols, setSymbols] = useState([]);
   const [symbol, setSymbol] = useState("XBTUSD");
@@ -133,9 +143,28 @@ export default function Backtest() {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  const chartData = useMemo(() => {
+  const equitySeries = useMemo(() => {
     if (!run?.equity_curve?.length) return [];
-    return run.equity_curve.map((p) => ({ t: p.t, equity: p.equity }));
+    return run.equity_curve.map((p) => ({ t: p.t, equity: p.equity, price: p.price }));
+  }, [run]);
+
+  const ddSeries = useMemo(() => {
+    if (!run?.equity_curve?.length) return [];
+    return computeDrawdownSeries(run.equity_curve);
+  }, [run]);
+
+  const tradeMarkers = useMemo(() => {
+    if (!run?.trades?.length || !run?.equity_curve?.length) return [];
+    // Map trade entry/exit times to approximate price (nearest equity_curve point)
+    const byT = new Map(run.equity_curve.map((p) => [p.t, p.price]));
+    const points = [];
+    run.trades.forEach((t, i) => {
+      const ep = byT.get(t.entry_time);
+      const xp = byT.get(t.exit_time);
+      if (ep) points.push({ t: t.entry_time, price: ep, kind: "entry", i });
+      if (xp) points.push({ t: t.exit_time, price: xp, kind: "exit", i });
+    });
+    return points;
   }, [run]);
 
   async function loadSymbols() {
@@ -349,68 +378,132 @@ export default function Backtest() {
       </Card>
 
       {run ? (
-        <div data-testid="backtest-results" className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <Card data-testid="backtest-summary-card" className="rounded-2xl lg:col-span-1">
-            <CardHeader>
-              <CardTitle data-testid="backtest-summary-title" className="text-base">Summary</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div data-testid="backtest-summary-totalreturn-label" className="text-sm text-muted-foreground">Total return</div>
-                <div data-testid="backtest-summary-totalreturn" className="text-sm font-medium">{fmt(run.summary.total_return_pct, 2)}%</div>
-              </div>
-              <div className="flex items-center justify-between">
-                <div data-testid="backtest-summary-maxdd-label" className="text-sm text-muted-foreground">Max drawdown</div>
-                <div data-testid="backtest-summary-maxdd" className="text-sm font-medium">{fmt(run.summary.max_drawdown_pct, 2)}%</div>
-              </div>
-              <div className="flex items-center justify-between">
-                <div data-testid="backtest-summary-winrate-label" className="text-sm text-muted-foreground">Win rate</div>
-                <div data-testid="backtest-summary-winrate" className="text-sm font-medium">{fmt(run.summary.win_rate_pct, 1)}%</div>
-              </div>
-              <div className="flex items-center justify-between">
-                <div data-testid="backtest-summary-trades-label" className="text-sm text-muted-foreground">Trades</div>
-                <div data-testid="backtest-summary-trades" className="text-sm font-medium">{run.summary.trades}</div>
-              </div>
-              <div className="pt-2">
-                <Badge data-testid="backtest-summary-runid" variant="secondary" className="rounded-full">
-                  Run {run.id.slice(0, 8)}…
-                </Badge>
-              </div>
-            </CardContent>
-          </Card>
+        <div data-testid="backtest-results" className="space-y-4">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <Card data-testid="backtest-summary-card" className="rounded-2xl lg:col-span-1">
+              <CardHeader>
+                <CardTitle data-testid="backtest-summary-title" className="text-base">Summary</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div data-testid="backtest-summary-totalreturn-label" className="text-sm text-muted-foreground">Total return</div>
+                  <div data-testid="backtest-summary-totalreturn" className="text-sm font-medium">{fmt(run.summary.total_return_pct, 2)}%</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div data-testid="backtest-summary-maxdd-label" className="text-sm text-muted-foreground">Max drawdown</div>
+                  <div data-testid="backtest-summary-maxdd" className="text-sm font-medium">{fmt(run.summary.max_drawdown_pct, 2)}%</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div data-testid="backtest-summary-winrate-label" className="text-sm text-muted-foreground">Win rate</div>
+                  <div data-testid="backtest-summary-winrate" className="text-sm font-medium">{fmt(run.summary.win_rate_pct, 1)}%</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div data-testid="backtest-summary-trades-label" className="text-sm text-muted-foreground">Trades</div>
+                  <div data-testid="backtest-summary-trades" className="text-sm font-medium">{run.summary.trades}</div>
+                </div>
+                <div className="pt-2">
+                  <Badge data-testid="backtest-summary-runid" variant="secondary" className="rounded-full">
+                    Run {run.id.slice(0, 8)}…
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
 
-          <Card data-testid="backtest-equity-card" className="rounded-2xl lg:col-span-2">
-            <CardHeader>
-              <CardTitle data-testid="backtest-equity-title" className="text-base">Equity curve</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div data-testid="backtest-equity-chart" className="h-[260px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={chartData} margin={{ left: 6, right: 6, top: 10, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="tmxEq" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="hsl(var(--chart-4))" stopOpacity={0.35} />
-                        <stop offset="95%" stopColor="hsl(var(--chart-4))" stopOpacity={0.02} />
-                      </linearGradient>
-                    </defs>
-                    <XAxis hide dataKey="t" />
-                    <YAxis hide />
-                    <Tooltip
-                      contentStyle={{ background: "hsl(var(--popover))", borderRadius: 12, border: "1px solid hsl(var(--border))" }}
-                      labelFormatter={() => ""}
-                      formatter={(val) => [fmt(val, 2), "equity"]}
-                    />
-                    <Area type="monotone" dataKey="equity" stroke="hsl(var(--chart-4))" strokeWidth={2} fill="url(#tmxEq)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-              <div data-testid="backtest-equity-hint" className="mt-2 text-xs text-muted-foreground">
-                Strategy executes at next bar open. Fee/slippage are applied.
-              </div>
-            </CardContent>
-          </Card>
+            <Card data-testid="backtest-equity-card" className="rounded-2xl lg:col-span-2">
+              <CardHeader>
+                <CardTitle data-testid="backtest-equity-title" className="text-base">Equity curve</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div data-testid="backtest-equity-chart" className="h-[260px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={equitySeries} margin={{ left: 6, right: 6, top: 10, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="tmxEq" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="hsl(var(--chart-4))" stopOpacity={0.35} />
+                          <stop offset="95%" stopColor="hsl(var(--chart-4))" stopOpacity={0.02} />
+                        </linearGradient>
+                      </defs>
+                      <XAxis hide dataKey="t" />
+                      <YAxis hide />
+                      <Tooltip
+                        contentStyle={{ background: "hsl(var(--popover))", borderRadius: 12, border: "1px solid hsl(var(--border))" }}
+                        labelFormatter={() => ""}
+                        formatter={(val) => [fmt(val, 2), "equity"]}
+                      />
+                      <Area type="monotone" dataKey="equity" stroke="hsl(var(--chart-4))" strokeWidth={2} fill="url(#tmxEq)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+                <div data-testid="backtest-equity-hint" className="mt-2 text-xs text-muted-foreground">
+                  Strategy executes at next bar open. Fee/slippage are applied.
+                </div>
+              </CardContent>
+            </Card>
+          </div>
 
-          <Card data-testid="backtest-trades-card" className="rounded-2xl lg:col-span-3">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <Card data-testid="backtest-drawdown-card" className="rounded-2xl">
+              <CardHeader>
+                <CardTitle data-testid="backtest-drawdown-title" className="text-base">Drawdown</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div data-testid="backtest-drawdown-chart" className="h-[260px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={ddSeries} margin={{ left: 8, right: 8, top: 10, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="tmxDd" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="hsl(var(--destructive))" stopOpacity={0.25} />
+                          <stop offset="95%" stopColor="hsl(var(--destructive))" stopOpacity={0.02} />
+                        </linearGradient>
+                      </defs>
+                      <XAxis hide dataKey="t" />
+                      <YAxis tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }} />
+                      <Tooltip
+                        contentStyle={{ background: "hsl(var(--popover))", borderRadius: 12, border: "1px solid hsl(var(--border))" }}
+                        labelFormatter={() => ""}
+                        formatter={(val) => [fmt(val, 2), "drawdown %"]}
+                      />
+                      <Area type="monotone" dataKey="drawdown" stroke="hsl(var(--destructive))" strokeWidth={2} fill="url(#tmxDd)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+                <div data-testid="backtest-drawdown-hint" className="mt-2 text-xs text-muted-foreground">
+                  Drawdown is plotted negative (down from peak).
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card data-testid="backtest-price-trades-card" className="rounded-2xl">
+              <CardHeader>
+                <CardTitle data-testid="backtest-price-trades-title" className="text-base">Price + trade markers</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div data-testid="backtest-price-trades-chart" className="h-[260px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ScatterChart margin={{ left: 8, right: 8, top: 10, bottom: 0 }}>
+                      <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="4 6" />
+                      <XAxis dataKey="t" hide />
+                      <YAxis dataKey="price" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }} />
+                      <Tooltip
+                        contentStyle={{ background: "hsl(var(--popover))", borderRadius: 12, border: "1px solid hsl(var(--border))" }}
+                        labelFormatter={() => ""}
+                        formatter={(val, name) => [fmt(val, name === "price" ? 2 : 0), name]}
+                      />
+
+                      <Scatter data={equitySeries.map((p) => ({ t: p.t, price: p.price }))} fill="hsl(var(--chart-2))" />
+                      <Scatter data={tradeMarkers.filter((m) => m.kind === "entry")} fill="hsl(var(--chart-5))" />
+                      <Scatter data={tradeMarkers.filter((m) => m.kind === "exit")} fill="hsl(var(--chart-4))" />
+                    </ScatterChart>
+                  </ResponsiveContainer>
+                </div>
+                <div data-testid="backtest-price-trades-hint" className="mt-2 text-xs text-muted-foreground">
+                  Dots show price; colored markers indicate entry/exit (when trades exist).
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card data-testid="backtest-trades-card" className="rounded-2xl">
             <CardHeader>
               <CardTitle data-testid="backtest-trades-title" className="text-base">Trades</CardTitle>
             </CardHeader>
