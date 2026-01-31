@@ -105,8 +105,10 @@ def create_access_token(user_id: str, email: str) -> str:
 
 
 async def get_current_user(
-    creds: HTTPAuthorizationCredentials = Depends(security),
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
+    if not creds or not creds.credentials:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     token = creds.credentials
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
