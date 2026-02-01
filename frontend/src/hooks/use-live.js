@@ -21,7 +21,14 @@ export function useLive() {
 
   function disconnect() {
     if (esRef.current) {
-      esRef.current.close();
+      try {
+        // WebSocket
+        if (typeof esRef.current.close === "function") {
+          esRef.current.close();
+        }
+      } catch (e) {
+        // ignore
+      }
       esRef.current = null;
     }
     setConnected(false);
