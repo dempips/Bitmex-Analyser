@@ -102,6 +102,8 @@ export function useLive() {
     const now = Date.now();
     const recent = messageTimesRef.current.filter((t) => now - t <= 5000);
     return recent.length / 5;
+    // We intentionally depend on lastMessageAt to recompute periodically.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastMessageAt]);
 
   return {
