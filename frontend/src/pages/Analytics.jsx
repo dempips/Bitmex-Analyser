@@ -291,6 +291,9 @@ export default function Analytics() {
               <Badge data-testid="live-symbol-badge" variant="outline" className="rounded-full">
                 WS symbol: {live.status?.symbol || symbol}
               </Badge>
+              <Badge data-testid="live-rate-badge" variant="secondary" className="rounded-full">
+                {fmt(live.liveMsgsPerSec || 0, 1)} msg/s
+              </Badge>
               <div data-testid="live-last-message" className="text-xs text-muted-foreground">
                 {live.lastMessageAt ? `Last live message: ${Math.round((Date.now() - live.lastMessageAt) / 1000)}s ago` : "Waiting for live messages…"}
               </div>
