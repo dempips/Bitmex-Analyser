@@ -1,6 +1,8 @@
 import os
 import uuid
 import logging
+import asyncio
+
 import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -562,18 +564,29 @@ async def live_restart(payload: LiveStartRequest):
 @api_router.get("/live/stream", tags=["live"])
 async def live_stream():
     # Server-Sent Events endpoint.
-    # Frontend can open an EventSource and receive JSON messages.
+    # Note: Some proxies buffer streaming responses. We:
+    # - disable buffering via headers
+    # - send periodic keepalive pings
     q = await ws_manager.subscribe_client()
 
     async def event_gen():
         try:
             while True:
-                msg = await q.get()
-                yield f"data: {json.dumps(msg)}\n\n"
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=10)
+                    yield f"data: {json.dumps(msg)}\n\n"
+                except asyncio.TimeoutError:
+                    # SSE comment ping (keeps connection alive + prevents buffering)
+                    yield ": ping\n\n"
         finally:
             ws_manager.unsubscribe_client(q)
 
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(event_gen(), media_type="text/event-stream", headers=headers)
 
 
 @api_router.get("/live/heatmap", response_model=HeatmapResponse, tags=["live"])
