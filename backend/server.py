@@ -587,6 +587,24 @@ async def live_stream():
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
+
+
+@api_router.websocket("/live/ws")
+async def live_ws(websocket: WebSocket):
+    # Native WebSocket stream (preferred if the environment supports it).
+    await websocket.accept()
+    q = await ws_manager.subscribe_client()
+    try:
+        while True:
+            msg = await q.get()
+            await websocket.send_text(json.dumps(msg))
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        ws_manager.unsubscribe_client(q)
+
     }
     return StreamingResponse(event_gen(), media_type="text/event-stream", headers=headers)
 
