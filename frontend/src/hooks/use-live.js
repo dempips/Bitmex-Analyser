@@ -8,7 +8,9 @@ export function useLive() {
 
   const [orderbook, setOrderbook] = useState(null);
   const [trades, setTrades] = useState([]);
+  const [midSeries, setMidSeries] = useState([]);
 
+  const messageTimesRef = useRef([]);
   const esRef = useRef(null);
 
   async function refreshStatus() {
@@ -42,18 +44,25 @@ export function useLive() {
     };
 
     es.onmessage = (evt) => {
-      setLastMessageAt(Date.now());
+      const now = Date.now();
+      setLastMessageAt(now);
+      messageTimesRef.current = [...messageTimesRef.current, now].slice(-200);
       try {
         const msg = JSON.parse(evt.data);
         if (msg.type === "orderbook") {
           setOrderbook(msg);
+          if (msg.mid) {
+            setMidSeries((prev) => {
+              const next = [...prev, { t: msg.ts, mid: msg.mid }].slice(-180);
+              return next;
+            });
+          }
         } else if (msg.type === "trade") {
           setTrades((prev) => {
             const next = [...prev, msg].slice(-200);
             return next;
           });
         } else if (msg.type === "ws_status") {
-          // refresh status lightly
           setStatus((s) => ({ ...s, symbol: msg.symbol || s.symbol }));
         }
       } catch (e) {
@@ -89,13 +98,21 @@ export function useLive() {
 
   const lastTrade = useMemo(() => (trades.length ? trades[trades.length - 1] : null), [trades]);
 
+  const liveMsgsPerSec = useMemo(() => {
+    const now = Date.now();
+    const recent = messageTimesRef.current.filter((t) => now - t <= 5000);
+    return recent.length / 5;
+  }, [lastMessageAt]);
+
   return {
     status,
     connected,
     lastMessageAt,
+    liveMsgsPerSec,
     orderbook,
     trades,
     lastTrade,
+    midSeries,
     refreshStatus,
     connect,
     disconnect,
