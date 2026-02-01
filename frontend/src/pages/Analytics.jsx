@@ -169,6 +169,44 @@ export default function Analytics() {
 
     const range = timeframeToRange();
 
+  // Apply live orderbook to the UI continuously (no polling required).
+  useEffect(() => {
+    if (!live?.orderbook?.bids?.length || !live?.orderbook?.asks?.length) return;
+
+    // Market top-of-book
+    setSnapshot((prev) => {
+      const bandsPrev = prev?.bands || [];
+      return {
+        symbol: live.orderbook.symbol,
+        ts: live.orderbook.ts,
+        best_bid: live.orderbook.best_bid,
+        best_ask: live.orderbook.best_ask,
+        mid: live.orderbook.mid,
+        spread: live.orderbook.spread,
+        bands: bandsPrev,
+      };
+    });
+
+    // Depth chart source (convert to cumulative)
+    const bids = live.orderbook.bids;
+    const asks = live.orderbook.asks;
+
+    let cumB = 0;
+    const bidCum = bids.map((p) => {
+      cumB += Number(p.size || 0);
+      return { price: Number(p.price), cum_size: cumB };
+    });
+
+    let cumA = 0;
+    const askCum = asks.map((p) => {
+      cumA += Number(p.size || 0);
+      return { price: Number(p.price), cum_size: cumA };
+    });
+
+    setDepthData({ symbol: live.orderbook.symbol, ts: live.orderbook.ts, bids: bidCum, asks: askCum });
+  }, [live.orderbook]);
+
+
     try {
       const coreSettled = await Promise.allSettled([
         api.get("/bitmex/analytics/snapshot", { params: { symbol, depth, bands_bps: bands } }),
@@ -179,23 +217,7 @@ export default function Analytics() {
 
       const [snapRes, flowRes, depthRes, flowSeriesRes] = coreSettled;
 
-      // If live feed has an orderbook snapshot, use it for the top-of-page market values.
-      if (live.orderbook) {
-        setSnapshot((prev) => {
-          const bands = prev?.bands || [];
-          return {
-            symbol: live.orderbook.symbol,
-            ts: live.orderbook.ts,
-            best_bid: live.orderbook.best_bid,
-            best_ask: live.orderbook.best_ask,
-            mid: live.orderbook.mid,
-            spread: live.orderbook.spread,
-            bands,
-          };
-        });
-      }
-
-      if (snapRes.status === "fulfilled") setSnapshot(snapRes.value.data);
+      if (snapRes.status === "fulfilled" && !live.connected) setSnapshot(snapRes.value.data);
       if (flowRes.status === "fulfilled") setFlow(flowRes.value.data);
       if (depthRes.status === "fulfilled") setDepthData(depthRes.value.data);
       if (flowSeriesRes.status === "fulfilled") setFlowSeries(flowSeriesRes.value.data);
@@ -243,7 +265,7 @@ export default function Analytics() {
 
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pollingEnabled, pollIntervalSec, symbol, depth, bands, flowMinutes, liqMinutes, preset, customStart, customEnd, live.orderbook]);
+  }, [pollingEnabled, pollIntervalSec, symbol, depth, bands, flowMinutes, liqMinutes, preset, customStart, customEnd]);
 
   return (
     <div data-testid="analytics-page" className="space-y-6">
