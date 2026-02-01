@@ -69,6 +69,46 @@ export default function Analytics() {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
+
+  const liveOrderbook = live.orderbook;
+
+  // Apply live orderbook to the UI continuously (no polling required).
+  useEffect(() => {
+    if (!liveOrderbook?.bids?.length || !liveOrderbook?.asks?.length) return;
+
+    // Market top-of-book
+    setSnapshot((prev) => {
+      const bandsPrev = prev?.bands || [];
+      return {
+        symbol: liveOrderbook.symbol,
+        ts: liveOrderbook.ts,
+        best_bid: liveOrderbook.best_bid,
+        best_ask: liveOrderbook.best_ask,
+        mid: liveOrderbook.mid,
+        spread: liveOrderbook.spread,
+        bands: bandsPrev,
+      };
+    });
+
+    // Depth chart source (convert to cumulative)
+    const bids = liveOrderbook.bids;
+    const asks = liveOrderbook.asks;
+
+    let cumB = 0;
+    const bidCum = bids.map((p) => {
+      cumB += Number(p.size || 0);
+      return { price: Number(p.price), cum_size: cumB };
+    });
+
+    let cumA = 0;
+    const askCum = asks.map((p) => {
+      cumA += Number(p.size || 0);
+      return { price: Number(p.price), cum_size: cumA };
+    });
+
+    setDepthData({ symbol: liveOrderbook.symbol, ts: liveOrderbook.ts, bids: bidCum, asks: askCum });
+  }, [liveOrderbook]);
+
   const [pollingEnabled, setPollingEnabled] = useState(true);
   const [pollIntervalSec, setPollIntervalSec] = useState(5);
 
@@ -169,44 +209,6 @@ export default function Analytics() {
 
     const range = timeframeToRange();
 
-  // Apply live orderbook to the UI continuously (no polling required).
-  useEffect(() => {
-    if (!live?.orderbook?.bids?.length || !live?.orderbook?.asks?.length) return;
-
-    // Market top-of-book
-    setSnapshot((prev) => {
-      const bandsPrev = prev?.bands || [];
-      return {
-        symbol: live.orderbook.symbol,
-        ts: live.orderbook.ts,
-        best_bid: live.orderbook.best_bid,
-        best_ask: live.orderbook.best_ask,
-        mid: live.orderbook.mid,
-        spread: live.orderbook.spread,
-        bands: bandsPrev,
-      };
-    });
-
-    // Depth chart source (convert to cumulative)
-    const bids = live.orderbook.bids;
-    const asks = live.orderbook.asks;
-
-    let cumB = 0;
-    const bidCum = bids.map((p) => {
-      cumB += Number(p.size || 0);
-      return { price: Number(p.price), cum_size: cumB };
-    });
-
-    let cumA = 0;
-    const askCum = asks.map((p) => {
-      cumA += Number(p.size || 0);
-      return { price: Number(p.price), cum_size: cumA };
-    });
-
-    setDepthData({ symbol: live.orderbook.symbol, ts: live.orderbook.ts, bids: bidCum, asks: askCum });
-  }, [live.orderbook]);
-
-
     try {
       const coreSettled = await Promise.allSettled([
         api.get("/bitmex/analytics/snapshot", { params: { symbol, depth, bands_bps: bands } }),
@@ -219,7 +221,7 @@ export default function Analytics() {
 
       if (snapRes.status === "fulfilled" && !live.connected) setSnapshot(snapRes.value.data);
       if (flowRes.status === "fulfilled") setFlow(flowRes.value.data);
-      if (depthRes.status === "fulfilled") setDepthData(depthRes.value.data);
+      if (depthRes.status === "fulfilled" && !live.connected) setDepthData(depthRes.value.data);
       if (flowSeriesRes.status === "fulfilled") setFlowSeries(flowSeriesRes.value.data);
 
       const candleSettled = await Promise.allSettled([
