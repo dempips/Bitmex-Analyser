@@ -40,12 +40,29 @@ export function useLive() {
     const base = process.env.REACT_APP_BACKEND_URL;
     const wsUrl = base.replace(/^http/, "ws") + "/api/live/ws";
 
-    // Prefer native WebSocket if available.
+    // Prefer native WebSocket, but fall back to SSE if it fails quickly.
+    let didOpen = false;
+    let fallbackTimer = null;
+
     try {
       const ws = new WebSocket(wsUrl);
       esRef.current = ws;
 
+      fallbackTimer = setTimeout(() => {
+        if (!didOpen) {
+          try {
+            ws.close();
+          } catch (e) {
+            // ignore
+          }
+          // fallback to SSE
+          connectSse();
+        }
+      }, 1500);
+
       ws.onopen = () => {
+        didOpen = true;
+        if (fallbackTimer) clearTimeout(fallbackTimer);
         setConnected(true);
       };
 
@@ -54,6 +71,11 @@ export function useLive() {
       };
 
       ws.onclose = () => {
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        if (!didOpen) {
+          // fallback if it never opened
+          connectSse();
+        }
         setConnected(false);
       };
 
@@ -89,44 +111,47 @@ export function useLive() {
       // fallback to SSE
     }
 
-    const sseUrl = `${base}/api/live/stream`;
-    const es = new EventSource(sseUrl);
-    esRef.current = es;
+    connectSse();
 
-    es.onopen = () => {
-      setConnected(true);
-    };
+    function connectSse() {
+        const es = new EventSource(sseUrl);
+      esRef.current = es;
 
-    es.onerror = () => {
-      setConnected(false);
-    };
+      es.onopen = () => {
+        setConnected(true);
+      };
 
-    es.onmessage = (evt) => {
-      const now = Date.now();
-      setLastMessageAt(now);
-      messageTimesRef.current = [...messageTimesRef.current, now].slice(-200);
-      try {
-        const msg = JSON.parse(evt.data);
-        if (msg.type === "orderbook") {
-          setOrderbook(msg);
-          if (msg.mid) {
-            setMidSeries((prev) => {
-              const next = [...prev, { t: msg.ts, mid: msg.mid }].slice(-180);
+      es.onerror = () => {
+        setConnected(false);
+      };
+
+      es.onmessage = (evt) => {
+        const now = Date.now();
+        setLastMessageAt(now);
+        messageTimesRef.current = [...messageTimesRef.current, now].slice(-200);
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === "orderbook") {
+            setOrderbook(msg);
+            if (msg.mid) {
+              setMidSeries((prev) => {
+                const next = [...prev, { t: msg.ts, mid: msg.mid }].slice(-180);
+                return next;
+              });
+            }
+          } else if (msg.type === "trade") {
+            setTrades((prev) => {
+              const next = [...prev, msg].slice(-200);
               return next;
             });
+          } else if (msg.type === "ws_status") {
+            setStatus((s) => ({ ...s, symbol: msg.symbol || s.symbol }));
           }
-        } else if (msg.type === "trade") {
-          setTrades((prev) => {
-            const next = [...prev, msg].slice(-200);
-            return next;
-          });
-        } else if (msg.type === "ws_status") {
-          setStatus((s) => ({ ...s, symbol: msg.symbol || s.symbol }));
+        } catch (e) {
+          // ignore
         }
-      } catch (e) {
-        // ignore
-      }
-    };
+      };
+    }
   }
 
   async function start(symbol) {
