@@ -29,9 +29,61 @@ export function useLive() {
 
   function connect() {
     disconnect();
+
     const base = process.env.REACT_APP_BACKEND_URL;
-    const url = `${base}/api/live/stream`;
-    const es = new EventSource(url);
+    const wsUrl = base.replace(/^http/, "ws") + "/api/live/ws";
+
+    // Prefer native WebSocket if available.
+    try {
+      const ws = new WebSocket(wsUrl);
+      esRef.current = ws;
+
+      ws.onopen = () => {
+        setConnected(true);
+      };
+
+      ws.onerror = () => {
+        setConnected(false);
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+      };
+
+      ws.onmessage = (evt) => {
+        const now = Date.now();
+        setLastMessageAt(now);
+        messageTimesRef.current = [...messageTimesRef.current, now].slice(-200);
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === "orderbook") {
+            setOrderbook(msg);
+            if (msg.mid) {
+              setMidSeries((prev) => {
+                const next = [...prev, { t: msg.ts, mid: msg.mid }].slice(-180);
+                return next;
+              });
+            }
+          } else if (msg.type === "trade") {
+            setTrades((prev) => {
+              const next = [...prev, msg].slice(-200);
+              return next;
+            });
+          } else if (msg.type === "ws_status") {
+            setStatus((s) => ({ ...s, symbol: msg.symbol || s.symbol }));
+          }
+        } catch (e) {
+          // ignore
+        }
+      };
+
+      return;
+    } catch (e) {
+      // fallback to SSE
+    }
+
+    const sseUrl = `${base}/api/live/stream`;
+    const es = new EventSource(sseUrl);
     esRef.current = es;
 
     es.onopen = () => {
@@ -40,7 +92,6 @@ export function useLive() {
 
     es.onerror = () => {
       setConnected(false);
-      // browser auto-retries; we keep state as disconnected
     };
 
     es.onmessage = (evt) => {
