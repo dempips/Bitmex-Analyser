@@ -587,6 +587,8 @@ async def live_stream():
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(event_gen(), media_type="text/event-stream", headers=headers)
 
 
 @api_router.websocket("/live/ws")
@@ -604,9 +606,6 @@ async def live_ws(websocket: WebSocket):
         pass
     finally:
         ws_manager.unsubscribe_client(q)
-
-    }
-    return StreamingResponse(event_gen(), media_type="text/event-stream", headers=headers)
 
 
 @api_router.get("/live/heatmap", response_model=HeatmapResponse, tags=["live"])
