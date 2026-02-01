@@ -72,14 +72,21 @@ export default function Analytics() {
 
   const liveOrderbook = live.orderbook;
 
+  const lastLiveApplyRef = React.useRef(0);
+
   // Apply live orderbook to the UI continuously (no polling required).
+  // We throttle UI state updates to avoid React update storms.
   useEffect(() => {
     if (!liveOrderbook?.bids?.length || !liveOrderbook?.asks?.length) return;
+
+    const now = Date.now();
+    if (now - lastLiveApplyRef.current < 250) return; // ~4 updates/sec max
+    lastLiveApplyRef.current = now;
 
     // Market top-of-book
     setSnapshot((prev) => {
       const bandsPrev = prev?.bands || [];
-      return {
+      const next = {
         symbol: liveOrderbook.symbol,
         ts: liveOrderbook.ts,
         best_bid: liveOrderbook.best_bid,
@@ -88,6 +95,20 @@ export default function Analytics() {
         spread: liveOrderbook.spread,
         bands: bandsPrev,
       };
+
+      // If unchanged, avoid redundant updates
+      if (
+        prev &&
+        prev.symbol === next.symbol &&
+        prev.ts === next.ts &&
+        prev.best_bid === next.best_bid &&
+        prev.best_ask === next.best_ask &&
+        prev.mid === next.mid &&
+        prev.spread === next.spread
+      ) {
+        return prev;
+      }
+      return next;
     });
 
     // Depth chart source (convert to cumulative)
@@ -106,10 +127,14 @@ export default function Analytics() {
       return { price: Number(p.price), cum_size: cumA };
     });
 
-    setDepthData({ symbol: liveOrderbook.symbol, ts: liveOrderbook.ts, bids: bidCum, asks: askCum });
+    setDepthData((prev) => {
+      const next = { symbol: liveOrderbook.symbol, ts: liveOrderbook.ts, bids: bidCum, asks: askCum };
+      if (prev?.ts === next.ts && prev?.symbol === next.symbol) return prev;
+      return next;
+    });
   }, [liveOrderbook]);
 
-  const [pollingEnabled, setPollingEnabled] = useState(true);
+  const [pollingEnabled, setPollingEnabled] = useState(false);
   const [pollIntervalSec, setPollIntervalSec] = useState(5);
 
   const priceSeries = useMemo(() => {
