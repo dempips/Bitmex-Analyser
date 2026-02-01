@@ -114,7 +114,8 @@ export function useLive() {
     connectSse();
 
     function connectSse() {
-        const es = new EventSource(sseUrl);
+      const sseUrl = `${base}/api/live/stream`;
+      const es = new EventSource(sseUrl);
       esRef.current = es;
 
       es.onopen = () => {
