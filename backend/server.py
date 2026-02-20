@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
 
-from ws_manager import BitmexWsManager
+from backend.ws_manager import BitmexWsManager
 
 
 # -----------------------------

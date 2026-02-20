@@ -1,0 +1,11 @@
+# Python
+backend/venv/
+__pycache__/
+*.py[cod]
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
