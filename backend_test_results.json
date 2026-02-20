@@ -1,0 +1,77 @@
+{
+  "summary": {
+    "total_tests": 11,
+    "passed_tests": 11,
+    "failed_tests": 0,
+    "success_rate": 100.0,
+    "timestamp": "2026-01-31T07:49:23.845342"
+  },
+  "detailed_results": [
+    {
+      "test": "Health Check",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T07:49:19.549530"
+    },
+    {
+      "test": "User Registration",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T07:49:19.840306"
+    },
+    {
+      "test": "Auth Me",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T07:49:19.880480"
+    },
+    {
+      "test": "User Login",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T07:49:20.142243"
+    },
+    {
+      "test": "Auth Me",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T07:49:20.179770"
+    },
+    {
+      "test": "Protected Route (No Auth)",
+      "success": true,
+      "details": "Status: 401 (expected 401)",
+      "timestamp": "2026-01-31T07:49:20.213162"
+    },
+    {
+      "test": "BitMEX Symbols",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T07:49:21.547332"
+    },
+    {
+      "test": "Analytics Snapshot",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T07:49:21.803304"
+    },
+    {
+      "test": "Analytics Flow",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T07:49:23.129244"
+    },
+    {
+      "test": "BitMEX Candles",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T07:49:23.400097"
+    },
+    {
+      "test": "Backtest Run",
+      "success": true,
+      "details": "Status: 200 (expected 200)",
+      "timestamp": "2026-01-31T07:49:23.844374"
+    }
+  ]
+}

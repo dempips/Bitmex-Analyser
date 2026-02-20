@@ -1,0 +1,17 @@
+/* App-specific styles kept minimal; Tailwind handles layout */
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: hsl(var(--background));
+}
+
+/* Avoid centered app container per UX guidelines */

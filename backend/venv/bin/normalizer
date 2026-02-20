@@ -1,0 +1,8 @@
+#!/bin/sh
+'''exec' "/Users/kev/Desktop/Modelled Capital, Earthborne & SMSF/Bitmex-Analyser/Bitmex-Analyser/backend/venv/bin/python" "$0" "$@"
+' '''
+import sys
+from charset_normalizer.cli import cli_detect
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(cli_detect())
